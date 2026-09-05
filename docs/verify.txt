@@ -1,2 +1,3 @@
 # <lane>: <command>   one per lane, design-owned. Plain words only (no metacharacters, globs, quotes); run from repo root after docs/setup.sh as on main.
 canary: python3 -m pytest tests/canary -q
+src/00_scaffold: python3 -m pytest tests/src/00_scaffold -q

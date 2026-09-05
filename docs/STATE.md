@@ -16,6 +16,7 @@ merge: human
 | lane | directory | purpose | contract |
 |------|-----------|---------|----------|
 | `lane:canary` | `canary/` | two standing issues: post-merge canary (permanent claim, draft PR) and pre-merge canary (transient claim per workflow PR) | — |
+| `lane:src/00_scaffold` | `src/00_scaffold/` | <purpose> | `contracts/src/00_scaffold.md` |
 <!-- bootstrap.sh appends one row per lane you pass it; design edits after that. A lane may be a nested path (`src/01_ingest`); no lane may be a prefix of another. -->
 
 ## Verify environment
@@ -35,4 +36,4 @@ merge: human
 - Actions minutes are one pool per repo; check quota before a team event.
 
 ## Log
-- <date>: repo created from agent-bus-template; bootstrap run.
+- 2026-09-05: repo created from agent-bus-template; bootstrap run (mode=solo).
