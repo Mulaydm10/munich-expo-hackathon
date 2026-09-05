@@ -53,3 +53,12 @@ locked, individual decisions are not), `notes/glossary.md`, `notes/judging_align
 | 2026-09-05 | `notes/ai_onboarding_prompt.md` | hackathon-setup (initial scaffold) | Created |
 | 2026-09-05 | `logs/README.md` | hackathon-setup (initial scaffold) | Created; log directory convention defined |
 | 2026-09-05 | `tests/README.md` | hackathon-setup (initial scaffold) | Created; states no baseline exists and why |
+| 2026-09-01 | `COMPETITION.md` | devin-ai-integration[bot] (design node, PR `bot/join-real-lane-split`) | Filled from organizers' pages: event links, locked challenge, submission format, rubric (weights still `TBD`), prizes, hard rules, data situation. Deadline and team-size rules **contradicted between official sources** — recorded as `Q-0003`/`Q-0004`, not resolved |
+| 2026-09-01 | `VISION.md` | devin-ai-integration[bot] (design node, PR `bot/join-real-lane-split`) | Filled: FlexGrid thesis, users, why-unsolved, demo-time success bar, explicit non-goals. Closes `Q-0001` |
+| 2026-09-01 | `tests/README.md` | devin-ai-integration[bot] (design node, PR `bot/join-real-lane-split`) | Replaced "no baseline yet" with real conventions now that `ADR-0002` is Accepted and one green smoke test per lane exists, as that file itself required |
+
+Authority note: these three edits were made by the design node, not by Mulaydm10, under the
+kickoff instruction to set the repo up for the workers while the Main Agent was away. They are
+landed **via PR for the Main Agent to merge** — the human merge is the sign-off. `TODO(Mulaydm10)`:
+if you disagree with anything in the LOCKED files, say so on the PR rather than after merge; the
+whole build reads them as truth.

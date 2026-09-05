@@ -1,28 +1,38 @@
 > **LOCKED governing file.** Do not edit in place. See `GOVERNANCE.md`.
 
-# tests/ — status: no baseline yet
+# tests/ — conventions
 
-**There is no test baseline in this repo, and that is correct, not an oversight.** The stack is
-undecided (`design/decisions/ADR-0002-stack-selection.md`, open, `Q-0002`) — there is nothing to
-write a runnable test against yet, and no toolchain to run it with.
+Baseline exists as of 2026-09-01 (`ADR-0002` accepted): `pytest` on Python 3.12, one green smoke
+test per lane. `python3 -m pytest tests -q` → 10 passed on a clean checkout with no data downloaded.
 
-**Do not fake a baseline.** Do not add a stub test that always passes, a test runner with nothing
-to run, or a smoke test written against a stack that hasn't actually been chosen. A scaffold whose
-test command fails (or trivially no-ops) on first invocation trains every future agent — human or
-AI — to stop trusting or running the test command at all, which is worse than having no test
-command documented.
+## Layout
+```
+tests/canary/                 the bus's own canary lane (do not repurpose)
+tests/src/<lane>/             a lane's tests; ONLY that lane's claim may touch them
+tests/src/<lane>/conftest.py  lane-local fixtures — the ROOT conftest.py is shared state, so lanes
+                              do not add one; put shared helpers in a design PR instead
+```
+Every directory carries an `__init__.py`: test modules are imported as packages so two lanes may
+have same-named test files without colliding.
 
-## What must happen instead
-Whoever resolves `ADR-0002` (picks the stack) must, **in the same change**:
-1. Add the language-appropriate test tooling and a real, minimal smoke test that actually exercises
-   something (even just "the app boots" / "the CLI prints its help").
-2. Run it for real and confirm it's green before reporting the ADR resolved.
-3. Update `CLAUDE.md`'s "Canonical commands" section with the real command to run it.
-4. Replace this file's content with the real testing conventions for the chosen stack.
+## Rules
+1. **A lane's verify command must pass on a machine that has never downloaded a dataset.** If real
+   data would make the test meaningful, check in a small fixture (< 200 kB) instead of skipping.
+2. **No network in tests.** Ingest code is tested against checked-in sample payloads. A test that
+   reaches the internet is a broken test the moment the venue's wifi is.
+3. **Don't delete `test_lane_surface.py`.** It is what keeps an unimplemented lane from reporting a
+   green suite of zero tests (`pytest` exits 5 on no-collection, which reads as a failure, not a
+   pass — that is deliberate).
+4. **Assert the contract, not the implementation.** The guarantees listed in `contracts/src/<lane>.md`
+   ("energy is conserved", "quantiles are monotone", "no deadline is missed", "pooling ≥ naive sum")
+   are the tests that matter. Each of those sentences should be findable as a test name.
+5. **Determinism.** Anything that samples takes a `seed` and is asserted to reproduce. A reviewer
+   runs your test twice.
+6. **Speed.** A lane's suite stays under ~30 s; CI runs it on every push and a slow suite stops
+   being run. Mark anything longer and keep it out of the default path.
 
 ## Test fixtures and .gitignore
-Whatever stack is chosen, any fixture files placed under `tests/` must stay trackable in git. The
-top-level `.gitignore` already carries a `!tests/**` negation guard specifically so a future
-data/build-artifact ignore pattern can never silently swallow a fixture in here — verify with
-`git status --short` / `git check-ignore -v <fixture-path>` after adding one, not just by assuming
-the guard works.
+Fixture files under `tests/` must stay trackable in git. The top-level `.gitignore` carries a
+`!tests/**` negation guard specifically so the `data/` and build-artifact patterns can never
+silently swallow a fixture in here — verify with `git check-ignore -v <fixture-path>` after adding
+one, not by assuming the guard works.

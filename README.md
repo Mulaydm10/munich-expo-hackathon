@@ -1,8 +1,12 @@
 # Munich Expo Hackathon
 
-Fixed-deadline build-and-demo hackathon repo. Event theme, rubric, deadline, and judge list were
-not confirmed at scaffold time — see `COMPETITION.md` for the single source of truth on event facts
-(currently all `TBD`) and `VISION.md` for the project thesis (currently all `TBD`).
+**FlexGrid** — turning Germany's already-installed EV charging infrastructure into dispatchable
+grid flexibility, and quantifying how much of it exists. Entry for the MunichTech EXPO Hackathon
+2026 (challenge: *Mobility & Automotive: EV Charging Load Predictor*).
+
+`VISION.md` is the thesis; `COMPETITION.md` is the single source of truth on event facts — including
+two points where official sources contradict each other (deadline, team size), left as
+contradictions rather than resolved by guessing.
 
 This `README.md` is a **plain file**, not governance-locked — see `GOVERNANCE.md` for the full
 category breakdown. It's safe to append to (e.g. a later graft of tooling onto this repo) without
@@ -19,8 +23,17 @@ Main Agent sign-off.
 8. `experiments/experiment_log.md` — recent experiments
 
 ## Status
-Stack: **undecided** (see `design/decisions/ADR-0002-stack-selection.md`, open, `Q-0002`).
-No test baseline exists yet — see `tests/README.md`, and do not fake one.
+Stack: **Python 3.12 only** — FastAPI + Jinja2 + CDN front-end, no node toolchain
+(`design/decisions/ADR-0002-stack-selection.md`, Accepted). Commands in `CLAUDE.md`; the
+authoritative per-lane command is `docs/verify.txt`.
+
+```sh
+bash docs/setup.sh && python3 -m pytest tests -q
+```
+
+Nine lanes, contracted in `contracts/` and built in parallel by worker sessions under `AGENTS.md`:
+`data → fleet → forecast → grid / market / sched → service → ui / voice`. Each lane currently has a
+green smoke test and no implementation.
 
 ## End-of-session checklist
 - Overwrite `STATE.md` with the current snapshot

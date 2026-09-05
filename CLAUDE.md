@@ -4,20 +4,25 @@ This is the auto-loaded entry point for any Claude Code session opening this rep
 If you are not Claude Code, read `AGENTS.md` instead (same rules, vendor-neutral).
 
 ## What this is
-A fixed-deadline build-and-demo hackathon repo, scaffolded before the event's own facts
-(theme, rubric, deadline, judges, track) were known. It is **not** an ML competition
-(no leaderboard/submission-score loop) and **not** open-ended research (no fixed deadline
-absent) — see `COMPETITION.md` once it's filled for what kind of event this actually is.
+**FlexGrid** — EV charging as dispatchable grid flexibility, at national scale. Entry for the
+MunichTech EXPO Hackathon 2026, challenge *Mobility & Automotive: EV Charging Load Predictor*.
+Read `VISION.md` for the thesis and `COMPETITION.md` for event facts (deadline, rubric, rules —
+that file is the only place they live). A fixed-deadline build-and-demo event: **not** an ML
+competition (no leaderboard) and **not** open-ended research.
 
 ## Read order (cold start)
 1. `CLAUDE.md` (this file) — or `AGENTS.md` if you're not Claude Code
 2. `STATE.md` — live snapshot, most-current-truth
-3. `VISION.md` — the thesis (currently unfilled, see below)
-4. `COMPETITION.md` — event facts (currently unfilled, see below)
+3. `VISION.md` — the thesis
+4. `COMPETITION.md` — event facts (two are contradicted between official sources; read the caveats)
 5. `GOVERNANCE.md` — who may edit what
 6. `AGENTS.md` — multi-agent concurrency model
 7. `worklog.md` (tail) — recent history
 8. `experiments/experiment_log.md` — recent experiments
+
+If you are a **worker** (bus lane task): the above is background. `AGENTS.md`, `docs/STATE.md`,
+`contracts/CONVENTIONS.md` and `contracts/src/<your lane>.md` are the operative documents, and your
+lane's contract outranks anything you infer from neighbouring code.
 
 ## Governance, in one paragraph
 Files are either **LOCKED** (event facts, thesis, ADR process, experiment/research/logs/tests
@@ -37,15 +42,26 @@ edit freely, no sign-off required. Every LOCKED-file edit (including first autho
 - `DEMO-####` — demo scenarios, in `DEMO.md`
 
 ## Canonical commands
-**Stack is not yet decided.** No build/test/run commands exist yet — do not invent or fake one.
-See `design/decisions/ADR-0002-stack-selection.md` (open, `Q-0002`) for the decision in progress.
-`TODO(Mulaydm10)`: whoever resolves that ADR must land the canonical commands here **and** a green
-smoke test in `tests/` **in the same change** — not one without the other.
+Python 3.12, one runtime for every lane, no node toolchain
+(`design/decisions/ADR-0002-stack-selection.md`, Accepted; `Q-0002` closed).
+
+```sh
+bash docs/setup.sh                      # deps (pip install -r requirements-dev.txt)
+python3 -m pytest tests -q              # whole suite
+python3 -m pytest tests/src/<lane> -q   # one lane — the exact per-lane command is docs/verify.txt
+uvicorn src.service.api:app --reload    # the app (once src/service exists)
+```
+Run from the repo root. `docs/verify.txt` is authoritative for what CI runs per lane; if a command
+here disagrees with that file, that file wins and this one is stale — fix it.
+No lint or typecheck gate is configured yet; do not add one to CI without a design PR + canary
+(`AGENTS.md`), because `requirements-dev.txt` and `docs/setup.sh` are what CI executes.
 
 ## Hard rules
 - Never invent event facts (deadline, rubric, theme, judges). If `COMPETITION.md` says `TBD`,
   leave it `TBD` — a wrong assumed rule can disqualify a submission.
-- Never commit to a stack outside the open ADR while `Q-0002` is unresolved.
+- Stack is settled by `ADR-0002`: Python only, no node/npm/bundler anywhere. Adding a second
+  toolchain, or any dependency to `requirements-dev.txt`, needs a new ADR / design PR — never a
+  worker commit.
 - `DEMO.md` must stay runnable at all times once any scenario exists in it: fixing a broken demo
   outranks adding a new feature.
 - Any agent finishing a unit of work (including blocking or running out of turn budget) updates
