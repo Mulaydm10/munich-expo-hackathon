@@ -32,8 +32,10 @@ def classify_sites(sites: pd.DataFrame) -> pd.DataFrame
 
 def synthesise_sessions(sites: pd.DataFrame, weather: pd.DataFrame, days: Sequence[date],
                         *, params: Mapping[str, FleetParams] = PROFILES, seed: int) -> pd.DataFrame
-    """columns: session_id, site_id, t_arrive, t_depart, energy_kwh, max_power_kw, phase (1|2|3),
-    deadline_t (== t_depart), profile. Deterministic for a given seed."""
+    """columns: session_id, site_id, t_arrive, t_depart, energy_kwh, max_power_kw, n_phases (1|3),
+    deadline_t (== t_depart), profile. Deterministic for a given seed.
+    `n_phases` is how many phases this session draws on, NOT which phase it is wired to — the
+    wiring is `src/grid`'s `SiteElectrical.point_phase`, and the two are different quantities."""
 
 def to_load(sessions: pd.DataFrame, *, freq: str = "15min",
             policy: Literal["asap", "even"] = "asap") -> pd.DataFrame
@@ -48,7 +50,15 @@ def flexible_energy(sessions: pd.DataFrame) -> pd.DataFrame
 - `to_load(synthesise_sessions(...))` conserves energy: total kWh equals the sessions' total, to
   within 1e-6.
 - No session ends after its `deadline_t`; `energy_kwh <= max_power_kw * dwell_hours` always (an
-  infeasible draw is clipped and counted, never emitted).
+  infeasible draw is clipped and counted, never emitted). "Counted" is the rule in CONVENTIONS.md
+  under "any coercion is observable": a clip rate the caller cannot read is a contract violation,
+  because a clipped session has no scheduling slack and so silently removes the flexibility this
+  project measures.
+- At most `n_points` sessions overlap at a site: arrivals contend for a finite number of charge
+  points, and what queueing or turning away did is counted. Consequently
+  `to_load(...).load_kw` never exceeds the site's `rated_power_kw` — the uncontrolled baseline must
+  be a load the connection could physically carry, or every flexibility figure derived from it is
+  inflated.
 - Two calls with the same `seed` are byte-identical; different `seed` values are independent.
 - Runs on the full national site table without materialising per-second data (target: 50 k sites ×
   1 day in under 60 s on a laptop; chunk by site if needed).

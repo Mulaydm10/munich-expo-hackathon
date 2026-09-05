@@ -12,7 +12,9 @@ QUANTILES: tuple[float, ...] = (0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95)
 
 def make_features(load: pd.DataFrame, weather: pd.DataFrame, prices: pd.DataFrame,
                   *, horizon_h: int = 36) -> pd.DataFrame
-    """t, site_id, <feature columns>. Calendar (hour, weekday, holiday by state), lags at
+    """t, site_id, <feature columns>. Calendar (hour, weekday, holiday by the site's own `state`
+    from the `sites` table — German holidays differ by state, and a holiday is exactly when load
+    collapses nationally, i.e. the correlated moment a pooled promise is weakest), lags at
     24h/48h/168h, rolling means, temperature and its cold-threshold interaction, site profile.
     Must be computable at bid time: no feature may use data from after `t - horizon_h`."""
 
@@ -20,7 +22,10 @@ def fit(features: pd.DataFrame, target: pd.DataFrame, *, quantiles=QUANTILES,
         model: Literal["gbr", "linear"] = "gbr", seed: int = 0) -> QuantileModel
 def QuantileModel.predict(features: pd.DataFrame) -> pd.DataFrame
     """t, site_id, q05 … q95. Monotone across quantiles by construction (sorted post-hoc if the
-    fitted heads cross) and non-negative."""
+    fitted heads cross) and non-negative. Column names come from the sorted quantile list, never
+    from the caller's argument order: labelling by position let `q90` hold the smallest prediction.
+    Both coercions — the crossing sort and the clip at zero — are reported as rates, per
+    "any coercion is observable" in CONVENTIONS.md."""
 def QuantileModel.save(path: Path) -> None ;  load_model(path: Path) -> QuantileModel
 
 def backtest(features, target, *, folds: int, quantiles=QUANTILES) -> pd.DataFrame
