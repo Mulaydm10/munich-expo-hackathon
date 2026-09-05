@@ -33,14 +33,20 @@ def classify_sites(sites: pd.DataFrame) -> pd.DataFrame
 def synthesise_sessions(sites: pd.DataFrame, weather: pd.DataFrame, days: Sequence[date],
                         *, params: Mapping[str, FleetParams] = PROFILES, seed: int) -> pd.DataFrame
     """columns: session_id, site_id, t_arrive, t_depart, energy_kwh, max_power_kw, n_phases (1|3),
-    deadline_t (== t_depart), profile. Deterministic for a given seed.
+    deadline_t (== t_depart), profile, queued_h, energy_clipped. Deterministic for a given seed.
     `n_phases` is how many phases this session draws on, NOT which phase it is wired to — the
-    wiring is `src/grid`'s `SiteElectrical.point_phase`, and the two are different quantities."""
+    wiring is `src/grid`'s `SiteElectrical.point_phase`, and the two are different quantities.
+    `queued_h` is how long this arrival waited for a free charge point (0.0 if none); the
+    per-site arrivals/served/queued/dropped counts live in `.attrs['occupancy']`.
+    `energy_clipped` is the residual observability required below — True where the draw had to be
+    capped to fit the dwell."""
 
 def to_load(sessions: pd.DataFrame, *, freq: str = "15min",
             policy: Literal["asap", "even"] = "asap") -> pd.DataFrame
     """The uncontrolled baseline: t, site_id, load_kw. `asap` = charge at max power on arrival —
-    this is the behaviour the project exists to improve on, so it is the comparison everywhere."""
+    this is the behaviour the project exists to improve on, so it is the comparison everywhere.
+    Dense on `freq` over the span it is given: every (t, site_id) in that span gets a row, and an
+    interval with no charging is `load_kw == 0.0` rather than a missing row (see Guarantees)."""
 
 def flexible_energy(sessions: pd.DataFrame) -> pd.DataFrame
     """t, site_id, energy_kwh_due, latest_start_kw — the headroom a scheduler is allowed to move."""
@@ -59,6 +65,13 @@ def flexible_energy(sessions: pd.DataFrame) -> pd.DataFrame
   `to_load(...).load_kw` never exceeds the site's `rated_power_kw` — the uncontrolled baseline must
   be a load the connection could physically carry, or every flexibility figure derived from it is
   inflated.
+- `to_load` returns a **dense** grid: one row per (interval, site) across the span, zeros filled
+  explicitly, so `len(out) == n_intervals * n_sites`. An omitted interval makes "nobody charged"
+  indistinguishable from "no data" — the distinction CONVENTIONS.md requires — and this is the one
+  frame where zero is the common case, since the uncontrolled baseline is idle most of the night.
+  It is also consumed directly: `src/market.settle` validates full delivery coverage and rejects an
+  incomplete grid outright, and a sparse frame silently deflates every mean and peak computed off
+  it. `flexible_energy` follows the same rule.
 - Two calls with the same `seed` are byte-identical; different `seed` values are independent.
 - Runs on the full national site table without materialising per-second data (target: 50 k sites ×
   1 day in under 60 s on a laptop; chunk by site if needed).

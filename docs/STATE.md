@@ -37,13 +37,18 @@ Lane order is the data flow: `10 → 20 → 30 → 40/50/60 → 70 → 80/90`. L
 on-disk shapes and function signatures in `contracts/`, so a downstream lane can be built against a
 contract before its upstream lane produces real data (fixtures live in `tests/<lane>/`).
 
-**Active now:** `src/data`, `src/fleet`, `src/forecast`, `src/grid`, `src/market`, `src/sched` —
-all claimable, queue open (see the pinned Board, #16). `src/service`, `src/ui`, `src/voice` have
-contracts but no issues: they consume the lanes above, so queueing them now would only produce PRs
-against stubs. They get cut once `forecast` + `sched` land something real.
+**Active now: all nine.** Six lanes have merged something onto `main` (`src/data` #20, `src/grid`
+#21, `src/forecast` #22, `src/market` #24, `src/sched` #26, with `src/fleet` #19 in review), so the
+pipeline exists end to end and the seam lanes are no longer PRs against stubs: `src/service` (#28),
+`src/ui` (#30) and `src/voice` (#31) are cut. `src/voice` carries `blocked-by: #28` — it is written
+against the service HTTP surface and cannot start before the routes answer.
 
-Start order is the p0 pair, #7 (`src/data`) and #9 (`src/fleet`): independent of each other, and
-everything downstream consumes canonical tables or synthesised sessions.
+Pick order is the protocol's (lowest prio, then oldest, then lowest number); the pinned Board (#16)
+is regenerated from claim refs on every design wake and is the fastest way to see what is actually
+free. Two things the Board says that are worth repeating here: a merged lane is not a finished lane
+(`src/market` has #29 and #33 open against it, `src/sched` had eight defects deferred out of #26
+into #27), and #33 — `pool` / `correlation_structure` / `diversification_curve` — is the one piece
+of contracted API that does not exist anywhere while carrying the project's central claim.
 
 ## Verify environment
 `docs/setup.sh` (design-owned; CI runs the copy on `main`; changing it needs a canary like any workflow change). Default: `python3` + `requirements-dev.txt`. Workers run the same script once per worktree.
