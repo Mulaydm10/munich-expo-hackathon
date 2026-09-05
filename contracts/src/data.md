@@ -43,6 +43,11 @@ def nearest_weather_station(lat: float, lon: float) -> str
 `site_id` is stable and deterministic: `<state>-<postcode>-<sha1(operator+lat+lon)[:8]>`. It must
 not change when a download is repeated — every downstream artifact is keyed on it.
 
+One `sites` row is **one physical location per operator**, not one registry row: the key is derived
+from (operator, lat, lon), so co-located installations collapse into a single row with
+`rated_power_kw` and `n_points` **summed**. `src/fleet` reads `rated_power_kw / n_points` as the
+power of one charge point, so the two columns must always describe the same set of hardware.
+
 ## Sources to wire (all public; confirm each URL and record it in the `.meta.json`)
 Bundesnetzagentur Ladesäulenregister (charge points) · SMARD (load/generation) · ENTSO-E
 Transparency (cross-border, balancing) · EPEX/day-ahead via SMARD · DWD Open Data (weather) ·

@@ -22,20 +22,24 @@ class SiteElectrical:
     delta_top_oil_rated_c: float # rated top-oil rise
     hotspot_limit_c: float       # sustained limit (default from IEC 60076-7 loading guide)
     hotspot_emergency_c: float
-    point_phase: Mapping[str, int]   # charge point -> phase it is wired to
+    point_phase: Mapping[str, int]   # charge point -> which phase (1|2|3) it is wired to
+    provenance: str = ""         # how transformer_kva was derived; required, see infer_electrical
 
 def infer_electrical(sites: pd.DataFrame, *, seed: int) -> dict[str, SiteElectrical]
     """Registry data has no transformer rating; derive it from installed capacity with a documented
     sizing rule, and record the rule in the returned object's provenance field. Deterministic."""
 
 def hotspot_temperature(load_kw: pd.Series, ambient_c: pd.Series, site: SiteElectrical) -> pd.Series
-    """Exponential top-oil + winding model (IEC 60076-7 §8, difference-equation form). Stateful in
+    """Exponential top-oil + winding model (IEC 60076-7 clause 7, difference-equation form). Stateful in
     time: the answer at t depends on the whole preceding load path, which is the point."""
 
 def thermal_envelope(site: SiteElectrical, ambient_c: pd.Series, *,
                      prior_load_kw: pd.Series | None = None) -> pd.DataFrame
-    """t, max_kw — the largest constant-over-interval load that keeps hotspot <= limit given
-    ambient and thermal history. Cold night => max_kw above nameplate; hot evening => below."""
+    """t, max_kw, clipped — the largest constant-over-interval load that keeps hotspot <= limit
+    given ambient and thermal history. Cold night => max_kw above nameplate; hot evening => below.
+    `clipped` is True where the solved value hit the absolute ceiling on how far above nameplate
+    this lane will ever go, per "any coercion is observable" in CONVENTIONS.md.
+    A NaN in `ambient_c` raises: missing weather must never read as unlimited headroom."""
 
 def phase_allocate(demand_kw: Mapping[str, float], site: SiteElectrical) -> dict[str, float]
     """Per-point setpoints respecting each phase's own limit. Returns the achievable allocation."""

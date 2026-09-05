@@ -52,6 +52,42 @@ derived artifacts only through that lane's Python API. No lane hard-codes anothe
 - Determinism: any function that samples takes `seed: int` and returns identical output for
   identical inputs. A reviewer will run it twice.
 
+## Any coercion is observable
+When a function enforces a constraint by changing a value rather than by failing — clipping,
+clamping, flooring at zero, sorting crossed quantiles, rounding a bid down to a whole block,
+substituting a default for a missing input — the frequency of that change is part of the return
+value, not an implementation detail.
+
+- Return it as a column (`thermal_envelope`'s `clipped`) where it is per-row, or in `df.attrs` /
+  an attribute on the returned object (`floor_clamp_rate`, `last_predict_crossing_rate`) where it
+  is a rate.
+- Name it for what happened, and make it a rate or a count — not a boolean "something was coerced".
+- A test must pin it at both ends: a fixture that forces the coercion and one that avoids it, so
+  the measurement is proven to move rather than merely to exist.
+
+The reason is specific to this project: every coercion here moves the answer in a direction that
+flatters us or endangers a commitment, and the difference between a defensible number and a made-up
+one is whether we can say how often the constraint bound. A silent coercion also hides bugs — a NaN
+ambient temperature made `thermal_envelope` return *maximum* headroom, and only an unrecorded clamp
+kept that invisible.
+
+Preferred over coercion, where the choice exists: reject the input (`_no_nan`) or remove the cause.
+Missing data is a fact the operator needs, not something to paper over with a permissive default.
+
+## Precedence when documents disagree
+`contracts/` wins over an issue body, over a docstring, over neighbouring code. An issue is a
+request for work and may be written before the interface settles; the contract is the interface
+other lanes are built against, so implementing the issue's version silently breaks a lane that
+read the contract.
+
+An issue body **does** define *scope* — how much of the contract to implement now. The contract
+describing a function is not authority to implement it in whatever issue happens to be open.
+Contract decides *what a thing is*; issue decides *whether it is in this PR*.
+
+If the contract is what is wrong, say so in the PR and implement the contract anyway. Fixing it is
+a design PR, and until that lands, one lane quietly right is worse than every lane consistently
+wrong.
+
 ## Tests
 - A lane's tests live only in `tests/<lane>/`; fixtures too (small, checked in, < 200 kB).
 - No test may hit the network. Ingest tests run against checked-in sample payloads.
