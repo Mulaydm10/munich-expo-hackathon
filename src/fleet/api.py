@@ -104,6 +104,18 @@ _SITE_COLUMNS = ("site_id", "rated_power_kw", "n_points", "is_dc", "operator")
 _SESSION_LOAD_COLUMNS = ("site_id", "t_arrive", "t_depart", "energy_kwh", "max_power_kw")
 _SESSION_FLEX_COLUMNS = ("site_id", "t_arrive", "deadline_t", "energy_kwh", "max_power_kw")
 
+# guess: a driver who cannot get a free point within this long gives up and leaves rather than
+# queueing indefinitely -- the arrival is dropped, not delayed forever (issue #9 occupancy fix).
+MAX_QUEUE_WAIT_H = 2.0
+
+# guess: a real driver leaves once charging is done, plus a bit of margin (unplugging, walking
+# back to the vehicle) -- not the instant the battery hits target. 15% headroom above the
+# physically-required charge time (issue #9 causal energy/dwell fix).
+ENERGY_DWELL_SLACK = 0.15
+
+# Sentinel "always free" time for a site's points before any session has occupied them.
+_NEVER_BUSY = pd.Timestamp("1970-01-01", tz="UTC")
+
 
 def _require_columns(df: pd.DataFrame, cols: Sequence[str], *, label: str) -> None:
     """Boundary assert used throughout this lane (src.data.api's own require_columns is not yet
@@ -191,29 +203,55 @@ def synthesise_sessions(
 ) -> pd.DataFrame:
     """Deterministic synthetic charging sessions for `sites` over `days`.
 
-    Columns: session_id, site_id, t_arrive, t_depart, energy_kwh, max_power_kw, phase (1|3),
-    deadline_t (== t_depart), profile.
+    Columns: session_id, site_id, t_arrive, t_depart, energy_kwh, max_power_kw, n_phases (1|3,
+    number of phases the point uses -- NOT `src/grid`'s `point_phase`, which is which phase index
+    a point is wired to), deadline_t (== t_depart), profile, queued_h, energy_clipped.
 
-    Feasibility invariant enforced for every emitted row: t_arrive < t_depart, energy_kwh > 0,
-    and energy_kwh <= max_power_kw * dwell_hours (an infeasible draw is clipped, never emitted).
+    `t_arrive` is the instant a session actually starts occupying a point (== the instant it
+    starts drawing power under the `asap` policy in `to_load`), not necessarily the instant the
+    vehicle originally showed up: sites only have `n_points` points, so an arrival that finds
+    every point busy queues for the next one to free (`queued_h` > 0 records how long) or, if no
+    point frees within `MAX_QUEUE_WAIT_H`, is dropped and never emitted at all (a driver who
+    can't get a point leaves). Per-site occupancy counts (arrivals/served/queued/dropped) for the
+    whole call are attached to the returned frame's `.attrs["occupancy"]` as a plain
+    `dict[site_id, dict[str, float]]` (same "recorded rather than silently applied" principle
+    `src/grid`'s `thermal_envelope` uses for its own `clipped` column, applied here via `.attrs`
+    because a dropped arrival has no row of its own to carry a column -- kept a plain dict rather
+    than a nested DataFrame because pandas propagates `.attrs` through most operations and then
+    compares them with `==` for equality, which raises on a DataFrame-valued attr).
+
+    Feasibility invariant enforced for every emitted row: t_arrive < t_depart, energy_kwh > 0, and
+    energy_kwh <= max_power_kw * dwell_hours. Energy is drawn first and dwell is derived from it
+    (`dwell_hours = max(exponential(dwell_mean_h), energy_kwh / max_power_kw * (1 +
+    ENERGY_DWELL_SLACK))`) so a real, causal driver-leaves-when-done relationship is what keeps a
+    session feasible, not an independent draw forced back into range after the fact -- the
+    per-row `energy_clipped` column stays True only for the residual case this still can't cover
+    (an infeasible draw is clipped and counted, never emitted, per contracts/src/fleet.md).
+
+    Temperature input is national in v1: `_daily_mean_temp_c` averages every weather station, so
+    every site sees the same ambient temperature on a given day and site responses are perfectly
+    correlated by construction -- a known limitation (design is tracking the per-site join as a
+    separate, non-blocking issue), not a result to read as earned correlation downstream.
     """
     _require_columns(sites, _SITE_COLUMNS, label="sites")
     if "profile" not in sites.columns:
         sites = classify_sites(sites)
 
     columns = [
-        "session_id", "site_id", "t_arrive", "t_depart", "energy_kwh",
-        "max_power_kw", "phase", "deadline_t", "profile",
+        "session_id", "site_id", "t_arrive", "t_depart", "energy_kwh", "max_power_kw",
+        "n_phases", "deadline_t", "profile", "queued_h", "energy_clipped",
     ]
     rows: list[dict] = []
+    occupancy_rows: dict[str, dict] = {}
 
     for _, site in sites.iterrows():
         site_id = site["site_id"]
         n_points = max(int(site["n_points"]), 1)
         max_power_kw = max(float(site["rated_power_kw"]) / n_points, 1.0)
-        phase = 1 if max_power_kw <= 7.4 else 3
+        n_phases = 1 if max_power_kw <= 7.4 else 3
         p = params[site["profile"]]
 
+        candidates: list[dict] = []
         for day in days:
             weekday = day.weekday()  # Mon=0..Sun=6 — matches weekday_factor's own Mon..Sun order
             temp_c = _daily_mean_temp_c(weather, day)
@@ -227,45 +265,102 @@ def synthesise_sessions(
                 is_topup = bool(rng.random() < p.soc_topup_share)
 
                 arrival_h = float(rng.normal(p.arrival_mode_h, p.arrival_spread_h)) % 24.0
-                t_arrive = _local_hour_to_utc(day, arrival_h)
+                t_arrive_natural = _local_hour_to_utc(day, arrival_h)
 
-                dwell_scale = 0.3 if is_topup else 1.0
-                dwell_hours = max(float(rng.exponential(p.dwell_mean_h * dwell_scale)), 0.05)
-                t_depart = t_arrive + pd.Timedelta(dwell_hours, unit="h")
-
+                # energy first: a real driver leaves once charging is done, so dwell is derived
+                # from energy below, not drawn independently (issue #9 causal fix).
                 energy_scale = 0.25 if is_topup else 1.0
                 mu, sigma = _lognormal_mu_sigma(p.energy_mean_kwh * energy_scale, p.energy_cv)
                 energy_kwh = float(rng.lognormal(mu, sigma)) * temp_multiplier
-
-                cap = max_power_kw * dwell_hours
-                # never let a session demand more energy than its own dwell time can deliver
-                energy_kwh = min(energy_kwh, cap * 0.98)
                 energy_kwh = max(energy_kwh, 1e-4)
 
-                rows.append({
-                    "session_id": f"{site_id}-{day.isoformat()}-{i:04d}-{seed}",
-                    "site_id": site_id,
-                    "t_arrive": t_arrive,
-                    "t_depart": t_depart,
+                dwell_scale = 0.3 if is_topup else 1.0
+                dwell_natural_h = max(float(rng.exponential(p.dwell_mean_h * dwell_scale)), 0.05)
+                required_dwell_h = energy_kwh / max_power_kw * (1.0 + ENERGY_DWELL_SLACK)
+                dwell_hours = max(dwell_natural_h, required_dwell_h)
+
+                cap = max_power_kw * dwell_hours
+                # residual safety net only -- see docstring, this should very rarely fire now
+                energy_capped = min(energy_kwh, cap * 0.98)
+                energy_clipped = bool(energy_capped < energy_kwh - 1e-9)
+                energy_kwh = max(energy_capped, 1e-4)
+
+                candidates.append({
+                    "day": day,
+                    "i": i,
+                    "t_arrive_natural": t_arrive_natural,
+                    "dwell_hours": dwell_hours,
                     "energy_kwh": energy_kwh,
-                    "max_power_kw": max_power_kw,
-                    "phase": phase,
-                    "deadline_t": t_depart,
+                    "energy_clipped": energy_clipped,
                     "profile": site["profile"],
                 })
+
+        # Occupancy: allocate each site's arrivals (across every day, chronologically) to its
+        # `n_points` points. An arrival that finds every point busy queues for whichever frees
+        # soonest, or is dropped if that wait exceeds MAX_QUEUE_WAIT_H (issue #9 occupancy fix —
+        # previously every drawn session was emitted regardless of `n_points`, letting concurrent
+        # sessions and to_load exceed the site's rated power).
+        free_at = [_NEVER_BUSY] * n_points
+        n_queued = 0
+        n_dropped = 0
+        for cand in sorted(candidates, key=lambda c: c["t_arrive_natural"]):
+            point_idx = min(range(n_points), key=lambda k: free_at[k])
+            free_time = free_at[point_idx]
+            t_nat = cand["t_arrive_natural"]
+            wait_h = max((free_time - t_nat) / pd.Timedelta(1, unit="h"), 0.0)
+            if wait_h > MAX_QUEUE_WAIT_H:
+                n_dropped += 1
+                continue
+            if wait_h > 0:
+                n_queued += 1
+            # max(), not t_nat + Timedelta(wait_h, unit="h"): a float-hours round-trip through
+            # wait_h loses nanosecond precision and can land a hair *before* free_time, which
+            # would let this session's window start a fraction of a tick early -- i.e. briefly
+            # overlap the session it was queued behind, defeating the whole point of queueing.
+            t_arrive = max(t_nat, free_time)
+            t_depart = t_arrive + pd.Timedelta(cand["dwell_hours"], unit="h")
+            free_at[point_idx] = t_depart
+
+            rows.append({
+                "session_id": f"{site_id}-{cand['day'].isoformat()}-{cand['i']:04d}-{seed}",
+                "site_id": site_id,
+                "t_arrive": t_arrive,
+                "t_depart": t_depart,
+                "energy_kwh": cand["energy_kwh"],
+                "max_power_kw": max_power_kw,
+                "n_phases": n_phases,
+                "deadline_t": t_depart,
+                "profile": cand["profile"],
+                "queued_h": wait_h,
+                "energy_clipped": cand["energy_clipped"],
+            })
+
+        n_arrivals = len(candidates)
+        occupancy_rows[site_id] = {
+            "arrivals": n_arrivals,
+            "served": n_arrivals - n_dropped,
+            "queued": n_queued,
+            "dropped": n_dropped,
+            "dropped_rate": (n_dropped / n_arrivals) if n_arrivals else 0.0,
+        }
+
+    occupancy = occupancy_rows  # dict[site_id, dict[str, float]] -- see docstring for why not a DataFrame
 
     if not rows:
         empty = pd.DataFrame(columns=columns)
         empty["t_arrive"] = pd.to_datetime(empty["t_arrive"], utc=True)
         empty["t_depart"] = pd.to_datetime(empty["t_depart"], utc=True)
         empty["deadline_t"] = pd.to_datetime(empty["deadline_t"], utc=True)
+        empty.attrs["occupancy"] = occupancy
         return empty
 
     out = pd.DataFrame(rows, columns=columns)
     out["t_arrive"] = pd.to_datetime(out["t_arrive"], utc=True)
     out["t_depart"] = pd.to_datetime(out["t_depart"], utc=True)
     out["deadline_t"] = out["t_depart"]
-    return out.sort_values(["site_id", "t_arrive", "session_id"]).reset_index(drop=True)
+    out = out.sort_values(["site_id", "t_arrive", "session_id"]).reset_index(drop=True)
+    out.attrs["occupancy"] = occupancy
+    return out
 
 
 def _bin_contributions(

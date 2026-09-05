@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import date
+from datetime import date, timedelta
 
 import numpy as np
 import pandas as pd
@@ -177,11 +177,16 @@ def test_cold_weather_strictly_more_energy() -> None:
     cold = api.synthesise_sessions(sites, _weather(-5.0, days), days, seed=11)
 
     assert cold["energy_kwh"].sum() > warm["energy_kwh"].sum()
-    # arrivals/dwells should be identical (only the energy draw is temperature-scaled)
-    pd.testing.assert_series_equal(
-        warm.sort_values(["site_id", "t_arrive"])["t_arrive"].reset_index(drop=True),
-        cold.sort_values(["site_id", "t_arrive"])["t_arrive"].reset_index(drop=True),
-    )
+    # The underlying arrival *process* (Poisson session count, arrival-hour draw, top-up draw) is
+    # untouched by temperature -- only energy_kwh is temperature-scaled. Since issue #9, energy_kwh
+    # causally drives dwell_hours, which in turn feeds the per-site occupancy allocation, so a
+    # session's *emitted* t_arrive can legitimately shift (queueing) or the session can vanish
+    # entirely (dropped) between warm and cold runs even though the raw arrival draw was identical
+    # -- that is the occupancy fix working as designed, not a determinism regression. What must
+    # still match exactly is the arrival count each run's occupancy allocator was fed.
+    warm_arrivals = {site_id: occ["arrivals"] for site_id, occ in warm.attrs["occupancy"].items()}
+    cold_arrivals = {site_id: occ["arrivals"] for site_id, occ in cold.attrs["occupancy"].items()}
+    assert warm_arrivals == cold_arrivals
 
 
 # ---------------------------------------------------------------------------
@@ -219,3 +224,97 @@ def test_flexible_energy_no_nan_and_matches_columns() -> None:
     assert flex.isna().sum().sum() == 0
     assert (flex["energy_kwh_due"] >= 0).all()
     assert (flex["latest_start_kw"] >= 0).all()
+
+
+# ---------------------------------------------------------------------------
+# occupancy: sessions may never exceed a site's n_points concurrently (issue #9)
+# ---------------------------------------------------------------------------
+
+def _dc_site(rated_power_kw: float, n_points: int) -> pd.DataFrame:
+    return pd.DataFrame([{
+        "site_id": "DE-tight-dc1", "operator": "FastCharge Network",
+        "lat": 48.16, "lon": 11.55, "postcode": "80331", "state": "BY",
+        "rated_power_kw": rated_power_kw, "n_points": n_points, "is_dc": True,
+        "commissioned": "2023-09-01",
+    }])
+
+
+@pytest.mark.parametrize("seed", list(range(25)))
+def test_occupancy_never_exceeds_rated_power(seed: int) -> None:
+    # Same repro shape as the issue #9 report: a busy 2-point DC site over 30 cold days.
+    sites = _dc_site(rated_power_kw=300.0, n_points=2)
+    days = [date(2026, 1, 1) + timedelta(days=d) for d in range(30)]
+    weather = _weather(2.0, days)
+    sessions = api.synthesise_sessions(sites, weather, days, seed=seed)
+    if sessions.empty:
+        return
+    load = api.to_load(sessions, policy="asap")
+    worst = load.groupby("site_id")["load_kw"].max()
+    for site_id in sessions["site_id"].unique():
+        assert worst.get(site_id, 0.0) <= 300.0 + 1e-6
+
+
+def test_occupancy_counts_queueing_and_dropping() -> None:
+    # A single, very busy point: guarantees both queueing and dropping fire (unlike the milder
+    # repro shape above, where contention is real but rarely severe enough to force a drop).
+    sites = _dc_site(rated_power_kw=150.0, n_points=1)
+    busy = api.FleetParams(
+        vehicles_per_point=20.0, arrival_mode_h=13.0, arrival_spread_h=5.0,
+        dwell_mean_h=3.0, energy_mean_kwh=30.0, energy_cv=0.35, soc_topup_share=0.15,
+        temp_penalty_pct_per_c=2.0, weekday_factor=(1.0,) * 7, profile="public_dc",
+    )
+    days = [date(2026, 1, 1) + timedelta(days=d) for d in range(30)]
+    weather = _weather(2.0, days)
+    sessions = api.synthesise_sessions(sites, weather, days, params={"public_dc": busy}, seed=6)
+
+    occupancy = sessions.attrs["occupancy"]
+    assert isinstance(occupancy, dict)  # plain dict, not a DataFrame -- see synthesise_sessions docstring
+    row = occupancy["DE-tight-dc1"]
+    assert "queued" in row and "dropped" in row
+    assert row["arrivals"] == row["served"] + row["dropped"]
+    assert row["queued"] > 0
+    assert row["dropped"] > 0
+    # every served session is either immediate or counted as queued via queued_h
+    served = sessions[sessions["site_id"] == "DE-tight-dc1"]
+    assert (served["queued_h"] >= 0).all()
+    assert int((served["queued_h"] > 0).sum()) == row["queued"]
+
+
+# ---------------------------------------------------------------------------
+# residual energy clip (issue #9): still counted, but should now stay rare
+# ---------------------------------------------------------------------------
+
+def test_residual_energy_clip_rate_stays_low() -> None:
+    sites = pd.concat([
+        _dc_site(rated_power_kw=150.0, n_points=5).assign(site_id="DE-public-dc"),
+        _sites().iloc[[1]],  # workplace site
+    ], ignore_index=True)
+    days = [date(2026, 2, 1) + timedelta(days=d) for d in range(28)]
+    weather = _weather(2.0, days)
+    sessions = api.synthesise_sessions(sites, weather, days, seed=7)
+
+    assert "energy_clipped" in sessions.columns
+    clip_rate = sessions["energy_clipped"].mean()
+    assert clip_rate < 0.02  # the causal energy->dwell link (issue #9) should make this near-zero
+
+
+# ---------------------------------------------------------------------------
+# national-temperature limitation is documented (issue #9, non-blocking design note)
+# ---------------------------------------------------------------------------
+
+def test_docstring_documents_national_temperature_limitation() -> None:
+    assert "national" in api.synthesise_sessions.__doc__.lower()
+
+
+# ---------------------------------------------------------------------------
+# phase/n_phases naming collision with src/grid's point_phase (issue #9, non-blocking)
+# ---------------------------------------------------------------------------
+
+def test_phase_column_renamed_to_n_phases() -> None:
+    sites = _sites()
+    days = [date(2026, 3, 2)]
+    weather = _weather(10.0, days)
+    sessions = api.synthesise_sessions(sites, weather, days, seed=3)
+    assert "n_phases" in sessions.columns
+    assert "phase" not in sessions.columns
+    assert set(sessions["n_phases"].unique()).issubset({1, 3})
