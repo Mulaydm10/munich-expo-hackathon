@@ -381,7 +381,15 @@ def fit(
 
     fallback_quantiles = {tau: float(np.quantile(y, tau)) for tau in quantiles}
     return QuantileModel(
-        quantiles=tuple(quantiles),
+        # Sorted, not as given. predict() sorts each row of raw predictions
+        # ascending to stop the independently-fitted heads crossing, but the
+        # column *names* come from this tuple -- so an unsorted argument
+        # labelled the smallest value with the highest quantile. Measured on
+        # quantiles=(0.9, 0.1, 0.5): q90 got 49.3 and q10 got 57.74, the exact
+        # inversion, silently and with plausible-looking numbers. src/market
+        # sizes firm capacity off "the lower quantile" (#14), so this fails
+        # in the direction of promising capacity that is not there.
+        quantiles=tuple(sorted(quantiles)),
         model_type=model,
         seed=seed,
         feature_cols=feature_cols,

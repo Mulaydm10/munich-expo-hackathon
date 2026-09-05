@@ -311,3 +311,41 @@ def test_backtest_smoke():
     assert len(result) == 2 * len(api.QUANTILES)
     for col in ("pinball_model", "pinball_seasonal_naive", "pinball_climatological"):
         assert result[col].notna().all()
+
+
+def test_unsorted_quantiles_are_not_mislabelled():
+    """Found in review of PR #22.
+
+    predict() sorts each row of raw predictions ascending to stop the
+    independently-fitted heads crossing, but the column *names* came from the
+    `quantiles` tuple as the caller passed it. An unsorted argument therefore
+    labelled the smallest value with the highest quantile -- silently, with
+    entirely plausible numbers. Measured before the fix:
+
+        in=(0.1, 0.5, 0.9)  ->  q10=49.30  q50=53.08  q90=57.74
+        in=(0.9, 0.1, 0.5)  ->  q90=49.30  q10=53.08  q50=57.74
+
+    src/market sizes firm capacity off "the lower quantile" (#14), so this
+    fails in the direction of promising flexibility that is not there.
+    """
+    load, weather, prices = _make_synthetic(40, ("s1",), seed=0)
+    feats = api.make_features(load, weather, prices, horizon_h=1)
+
+    ascending = api.fit(feats, load, quantiles=(0.1, 0.5, 0.9), seed=0)
+    shuffled = api.fit(feats, load, quantiles=(0.9, 0.1, 0.5), seed=0)
+
+    assert shuffled.quantiles == (0.1, 0.5, 0.9), "fit must store quantiles sorted"
+
+    tail = feats.tail(60)
+    a, b = ascending.predict(tail), shuffled.predict(tail)
+    cols = [c for c in a.columns if c.startswith("q") and c[1:].isdigit()]
+    assert cols == [c for c in b.columns if c.startswith("q") and c[1:].isdigit()]
+    assert len(cols) == 3
+    for c in cols:
+        assert np.allclose(a[c].to_numpy(), b[c].to_numpy()), (
+            f"{c} differs by input order -- labels follow argument order, not value order"
+        )
+
+    # Guard the guard: if the columns were all equal this test would pass
+    # for the wrong reason, so require the quantiles to actually separate.
+    assert a[cols[0]].mean() < a[cols[-1]].mean()
