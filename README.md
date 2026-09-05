@@ -34,3 +34,14 @@ value to fill it.
 
 ## License
 MIT — see `LICENSE`.
+
+## This project runs on the agent-bus protocol
+Grafted from [`agent-bus-template`](https://github.com/Mulaydm10/agent-bus-template) — see
+`AGENTS.md` for the coordination protocol (design node reviews, worker claims via `claim/<n>` git
+refs, `docs/verify.txt` CI gate). The project's own pre-graft `AGENTS.md` (concurrency model, claim
+table, locked-file list) is preserved unchanged at `AGENTS-project.md`.
+
+Lanes are currently **provisional**: the event brief (theme, rubric, deadline, stack) was not known
+at graft time, so there is exactly one placeholder lane, `src/00_scaffold`, and no queue issues have
+been cut against it. Design (Devin) is expected to replace it with the real task split once the
+brief lands — see `docs/STATE.md` and the `design node handshake` issue.

@@ -35,6 +35,12 @@ logs/*
 scratch/*
 !scratch/.gitignore
 
+# agent-bus (grafted; from agent-bus-template's default Python runtime — swap when
+# design/decisions/ADR-0002-stack-selection.md resolves the stack)
+__pycache__/
+.pytest_cache/
+.venv/
+
 # --- Safety-net negation guard for tests/ fixtures ---
 # Whatever gets ignored above (or added above in the future), never let it swallow anything under
 # tests/. This is a deliberate belt-and-suspenders re-inclusion, not evidence a broad pattern

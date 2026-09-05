@@ -1,0 +1,197 @@
+# All PR checks in one workflow so `run` can `needs:` the enforcement jobs
+# (`needs` cannot cross workflow files). Trigger is `pull_request` on purpose:
+# do NOT change to pull_request_target — that would hand write credentials to
+# fork-authored code.
+#
+# Job layout:
+#   lane     - branch/role and lane-path enforcement; revert/<sha> = exact inverse of one merged claim commit (contents/issues/pull-requests: read)
+#   resolve  - map the issue's lane to a command in docs/verify.txt read from the BASE sha
+#   run      - docs/setup.sh (from BASE) then that command on the PR head, contents: read only, only after lane+resolve pass
+#
+# These jobs BLOCK merges only if branch protection marks them required.
+# Branch protection needs a public repo or GitHub Pro/org; otherwise they are advisory.
+name: checks
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+
+jobs:
+  lane:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      HEAD_REF: ${{ github.head_ref }}
+      AUTHOR: ${{ github.event.pull_request.user.login }}
+      ASSOC: ${{ github.event.pull_request.author_association }}
+      DESIGN_BOT: ${{ vars.DESIGN_BOT || 'devin-ai-integration[bot]' }}
+      HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+      BASE_REF: ${{ github.event.pull_request.base.ref }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: base = live tip of the base branch
+        # event.pull_request.base.sha can be stale (it is not refreshed when the base branch moves)
+        run: echo "BASE=$(git rev-parse "origin/$BASE_REF")" >> "$GITHUB_ENV"
+      - name: classify branch
+        run: |
+          # forks cannot create claim refs in this repo, so they cannot hold the lock; not a supported path
+          if [ "$HEAD_REPO" != "$GITHUB_REPOSITORY" ]; then echo "fork PRs are not supported ($HEAD_REPO)"; exit 1; fi
+          # mode is read from the base branch so a PR cannot relax the enforcement it is judged by
+          MODE=$(git show "$BASE:docs/STATE.md" 2>/dev/null | awk -F': *' '$1=="mode" {print $2; exit}' | tr -d '\r')
+          MODE=${MODE:-solo}
+          echo "mode=$MODE author=$AUTHOR assoc=$ASSOC head=$HEAD_REF"
+          case "$HEAD_REF" in
+            claim/*) echo "scope=lane" >> "$GITHUB_ENV" ;;
+            revert/*) echo "scope=revert" >> "$GITHUB_ENV" ;;
+            design/*)
+              if [ "$ASSOC" = "OWNER" ] || [ "$ASSOC" = "MEMBER" ] || [ "$AUTHOR" = "$DESIGN_BOT" ]; then
+                echo "scope=design" >> "$GITHUB_ENV"
+              else
+                echo "design/* requires a collaborator author"; exit 1
+              fi ;;
+            *)
+              if [ "$AUTHOR" = "$DESIGN_BOT" ]; then
+                echo "scope=none" >> "$GITHUB_ENV"
+              elif [ "$MODE" = solo ] && { [ "$ASSOC" = "OWNER" ] || [ "$ASSOC" = "MEMBER" ]; }; then
+                echo "solo mode: human PR from $AUTHOR ($ASSOC) - lane check not applicable"
+                echo "scope=none" >> "$GITHUB_ENV"
+              else
+                echo "PRs must be on claim/<issue> (lane work) or design/* (anything not lane-owned); got '$HEAD_REF'"; exit 1
+              fi ;;
+          esac
+      - name: lane set is well-formed (lanes may be nested paths; none may be a prefix of another)
+        run: |
+          # lanes = STATE.md table + verify.txt keys; a lane is a directory path, e.g. api or src/01_ingest
+          lanes_at() { { git show "$1:docs/STATE.md" 2>/dev/null | sed -nE 's/^\| `lane:([A-Za-z0-9_/-]+)`.*/\1/p'
+                         git show "$1:docs/verify.txt" 2>/dev/null | sed -nE 's/^([A-Za-z0-9_/-]+):.*/\1/p'; } | sort -u; }
+          # if lane a is a path-prefix of lane b, a file under b belongs to both and two claims may legitimately edit it
+          check() { for a in $2; do for b in $2; do case "$b" in "$a"/*) echo "lane '$a' is a prefix of lane '$b' ($1: docs/STATE.md / docs/verify.txt)"; exit 1 ;; esac; done; done; }
+          LANES=$(lanes_at "$BASE"); check base "$LANES"
+          # a PR that edits the lane set (any scope, incl. exempt owner branches) must leave it valid, or the failure lands on an innocent claim PR later
+          if ! git diff --quiet "$(git merge-base "$BASE" HEAD)" HEAD -- docs/STATE.md docs/verify.txt; then
+            HL=$(lanes_at HEAD); check head "$HL"; echo "head lanes: $(echo $HL)"
+          fi
+          { echo 'LANES<<EOF'; echo "$LANES"; echo EOF; } >> "$GITHUB_ENV"
+          echo "base lanes: $(echo $LANES)"
+      - name: design/* stays out of lane directories
+        if: env.scope == 'design'
+        run: |
+          # design owns everything a lane does not
+          BAD=$(git diff --name-only "$(git merge-base "$BASE" HEAD)" HEAD | while IFS= read -r f; do
+                  for l in $LANES; do case "$f" in "$l"/*|tests/"$l"/*) printf '%s\n' "$f"; continue 2 ;; esac; done
+                done)
+          if [ -n "$BAD" ]; then echo "design/* may not touch lane-owned paths (lanes: $(echo $LANES)):"; echo "$BAD"; exit 1; fi
+          echo "no lane-owned paths touched (lanes: $(echo $LANES))"
+      - name: revert/<sha> is exactly one git revert of one merged lane commit
+        if: env.scope == 'revert'
+        run: |
+          SHA=$(git rev-parse --verify -q "${HEAD_REF#revert/}^{commit}") || { echo "revert target is not a commit"; exit 1; }
+          git merge-base --is-ancestor "$SHA" "$BASE" || { echo "revert target is not on the base branch"; exit 1; }
+          git rev-parse -q --verify "$SHA^2" >/dev/null 2>&1 && { echo "revert target is a merge commit; name the lane commit itself"; exit 1; }
+          ORIGIN=$(gh api "repos/$GITHUB_REPOSITORY/commits/$SHA/pulls" --jq '.[0].head.ref // empty')
+          case "$ORIGIN" in claim/*) ;; *) echo "revert target did not land from a claim/* PR (got '${ORIGIN:-none}'); only lane commits are worker-revertible"; exit 1 ;; esac
+          MB=$(git merge-base "$BASE" HEAD)
+          if ! diff <(git diff "$MB" HEAD | grep -v '^index ') <(git diff "$SHA" "$SHA^" | grep -v '^index '); then
+            echo "PR diff is not the exact inverse of $SHA"; exit 1
+          fi
+          echo "exact revert of $SHA (from $ORIGIN)"
+      - name: resolve lane
+        if: env.scope == 'lane'
+        run: |
+          ISSUE=${HEAD_REF#claim/}
+          LANES=$(gh issue view "$ISSUE" --json labels --jq '[.labels[].name | select(startswith("lane:")) | sub("^lane:";"")]')
+          N=$(echo "$LANES" | jq length)
+          if [ "$N" -ne 1 ]; then echo "issue #$ISSUE must have exactly one lane: label, has $N: $LANES"; exit 1; fi
+          echo "LANE=$(echo "$LANES" | jq -r '.[0]')" >> "$GITHUB_ENV"
+      - name: files stay in lane
+        if: env.scope == 'lane'
+        run: |
+          BAD=$(git diff --name-only "$(git merge-base "$BASE" HEAD)" HEAD | while IFS= read -r f; do
+                  case "$f" in
+                    "$LANE"/*|tests/"$LANE"/*) ;;
+                    .gitignore|tests/__init__.py) ;;
+                    *) printf '%s\n' "$f" ;;
+                  esac
+                done)
+          if [ -n "$BAD" ]; then
+            echo "files outside lane '$LANE' (allowed: $LANE/, tests/$LANE/, .gitignore, tests/__init__.py):"; echo "$BAD"; exit 1
+          fi
+          echo "all changes inside lane '$LANE'"
+
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      cmd: ${{ steps.cmd.outputs.cmd }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      HEAD_REF: ${{ github.head_ref }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}   # read config from the base branch tip, never from the PR head
+          persist-credentials: false
+      - id: cmd
+        run: |
+          case "$HEAD_REF" in
+            claim/*) ISSUE=${HEAD_REF#claim/} ;;
+            revert/*) ORIGIN=$(gh api "repos/$GITHUB_REPOSITORY/commits/${HEAD_REF#revert/}/pulls" --jq '.[0].head.ref // empty')
+                      case "$ORIGIN" in claim/*) ISSUE=${ORIGIN#claim/} ;; *) echo "revert target has no claim/* origin"; exit 1 ;; esac ;;
+            *) echo "not a claim branch; nothing to verify"; exit 0 ;;
+          esac
+          LANE=$(gh issue view "$ISSUE" --json labels --jq '[.labels[].name | select(startswith("lane:")) | sub("^lane:";"")] | .[0] // empty')
+          if [ -z "$LANE" ]; then echo "issue #$ISSUE has no lane: label"; exit 1; fi
+          if [ ! -f docs/verify.txt ]; then echo "docs/verify.txt missing on base"; exit 1; fi
+          CMD=$(awk -v lane="$LANE" -F': ' '$1==lane {sub(/^[^:]*: /,""); print; exit}' docs/verify.txt | tr -d '\r')
+          if [ -z "$CMD" ]; then echo "docs/verify.txt has no entry for lane '$LANE'"; exit 1; fi
+          # plain words only: no shell metacharacters, globs, or quotes
+          case "$CMD" in
+            *[\;\|\&\$\`\<\>\(\)\*\?\'\"\{\}\[\]\\]*) echo "verify command must be plain words: $CMD"; exit 1 ;;
+          esac
+          echo "lane=$LANE cmd=$CMD"
+          echo "cmd=$CMD" >> "$GITHUB_OUTPUT"
+
+  run:
+    needs: [lane, resolve]
+    if: needs.resolve.outputs.cmd != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read   # minimum to clone a private repo; no write scopes, credentials not persisted
+    env:
+      BASE_REF: ${{ github.event.pull_request.base.ref }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - run: echo "BASE_SHA=$(git rev-parse "origin/$BASE_REF")" >> "$GITHUB_ENV"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: runtime setup (docs/setup.sh from reviewed base, never from the PR head)
+        run: |
+          if git cat-file -e "$BASE_SHA:docs/setup.sh" 2>/dev/null; then
+            git show "$BASE_SHA:docs/setup.sh" > /tmp/setup.sh
+            bash -e /tmp/setup.sh
+          elif git cat-file -e "$BASE_SHA:requirements-dev.txt" 2>/dev/null; then
+            git show "$BASE_SHA:requirements-dev.txt" > /tmp/requirements-dev.txt
+            python3 -m pip install -q -r /tmp/requirements-dev.txt
+          else
+            echo "no docs/setup.sh or requirements-dev.txt on base"
+          fi
+      - name: verify
+        env:
+          CMD: ${{ needs.resolve.outputs.cmd }}
+        run: |
+          echo "+ $CMD"
+          set -f
+          # shellcheck disable=SC2086
+          $CMD
