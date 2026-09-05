@@ -271,3 +271,78 @@ def test_require_columns_raises_on_missing_column() -> None:
 def test_nearest_weather_station_not_implemented_yet() -> None:
     with pytest.raises(NotImplementedError):
         api.nearest_weather_station(48.0, 9.0)
+
+
+# --- multi-file ingestion and line-terminator tolerance -----------------------
+# Both of these were real bugs found in review of PR #20, not hypotheticals.
+# The first was silent: canonicalise() read raw_files[0] and dropped the rest
+# with no error, so a partitioned source produced a short table that every
+# other test still passed on. #8 (SMARD/DWD) is date-partitioned, so the very
+# next issue in this lane would have walked into it.
+
+
+def _split_fixture_rows() -> tuple[bytes, bytes, int]:
+    """The fixture's data rows split in half, each half keeping preamble+header."""
+    raw = FIXTURE.read_bytes()
+    parts = raw.split(b"\r\n")
+    hdr = next(i for i, l in enumerate(parts) if l.split(b";", 1)[0] == b"Ladeeinrichtungs-ID")
+    head, rows = parts[: hdr + 1], [r for r in parts[hdr + 1 :] if r.strip()]
+    mid = len(rows) // 2
+    a = b"\r\n".join(head + rows[:mid]) + b"\r\n"
+    b = b"\r\n".join(head + rows[mid:]) + b"\r\n"
+    return a, b, len(rows)
+
+
+def test_every_raw_file_is_ingested_not_just_the_first(tmp_path: Path) -> None:
+    a, b, _ = _split_fixture_rows()
+
+    def sites_for(files: list[tuple[str, bytes]], name: str) -> int:
+        root = _fresh_root(tmp_path, name)
+        for fn, data in files:
+            _seed_raw(root, data, filename=fn)
+        api.canonicalise("charge_points", root=root)
+        return len(api.load("sites", root=root))
+
+    only_a = sites_for([("a.csv", a)], "a")
+    only_b = sites_for([("b.csv", b)], "b")
+    both = sites_for([("a.csv", a), ("b.csv", b)], "both")
+
+    # Halves may share a co-located site, so `both` need not equal a + b --
+    # but it must exceed either half, and it must equal the whole fixture.
+    assert both > only_a and both > only_b, (
+        f"both={both} did not exceed halves ({only_a}, {only_b}): a raw file was dropped"
+    )
+    assert both == FIXTURE_SITE_ROWS
+
+
+def test_co_located_installations_aggregate_across_raw_files(tmp_path: Path) -> None:
+    """Splitting the same rows across two files must not create duplicate sites."""
+    a, b, _ = _split_fixture_rows()
+    root = _fresh_root(tmp_path, "cross")
+    _seed_raw(root, a, filename="a.csv")
+    _seed_raw(root, b, filename="b.csv")
+    api.canonicalise("charge_points", root=root)
+    df = api.load("sites", root=root)
+    assert df["site_id"].is_unique
+    assert len(df) == FIXTURE_SITE_ROWS
+
+
+def test_lf_only_export_parses_like_crlf(tmp_path: Path) -> None:
+    """A re-saved or LF-normalised export must not fail to find the header."""
+    raw = FIXTURE.read_bytes()
+    assert b"\r\n" in raw, "fixture is expected to ship CRLF"
+    lf = raw.replace(b"\r\n", b"\n")
+
+    root = _fresh_root(tmp_path, "lf")
+    _seed_raw(root, lf, filename="lf.csv")
+    api.canonicalise("charge_points", root=root)
+    assert len(api.load("sites", root=root)) == FIXTURE_SITE_ROWS
+
+
+def test_single_file_sha256_is_unchanged_by_the_multifile_fix(tmp_path: Path) -> None:
+    """Provenance for the one-file case must stay byte-identical: the fixture's
+    recorded sha256 is a published claim, not an implementation detail."""
+    root = _fresh_root(tmp_path, "sha")
+    _seed_raw(root)
+    api.canonicalise("charge_points", root=root)
+    assert api.meta("sites", root=root)["sha256"] == FIXTURE_SHA256

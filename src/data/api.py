@@ -164,8 +164,8 @@ def _decode_raw(raw: bytes) -> str:
         return raw.decode("cp1252")
 
 
-def _parse_charge_points(raw: bytes) -> pd.DataFrame:
-    """Pure function: raw registry bytes -> the `sites` canonical DataFrame.
+def _parse_installations(raw: bytes) -> pd.DataFrame:
+    """Pure function: raw registry bytes -> one row per charging installation.
 
     The export leads with a handful of free-text notice lines before the
     real header row (identified by its first cell, `_HEADER_MARKER`), uses
@@ -181,7 +181,13 @@ def _parse_charge_points(raw: bytes) -> pd.DataFrame:
     # the registry's quoted "Public Key" cells contain one of those --
     # splitlines() would fragment that field and (after any row
     # reordering) corrupt row structure.
-    lines = text.split("\r\n")
+    # CRLF is what the registry ships, but requiring it made a re-saved or
+    # LF-normalised export fail with a confusing "could not find header row".
+    # Pick the terminator the file actually uses; keep the literal split
+    # either way, since that is what protects the embedded line-boundary
+    # characters that defeated splitlines().
+    terminator = "\r\n" if "\r\n" in text else "\n"
+    lines = text.split(terminator)
     try:
         header_idx = next(i for i, line in enumerate(lines) if line.split(";", 1)[0] == _HEADER_MARKER)
     except StopIteration as exc:
@@ -189,7 +195,7 @@ def _parse_charge_points(raw: bytes) -> pd.DataFrame:
             f"could not find header row (first cell {_HEADER_MARKER!r}) in raw charge_points file"
         ) from exc
 
-    body = "\r\n".join(lines[header_idx:])
+    body = terminator.join(lines[header_idx:])
     raw_df = pd.read_csv(io.StringIO(body), sep=";", dtype=str, keep_default_na=False)
 
     def _decimal_comma_to_float(series: pd.Series) -> pd.Series:
@@ -228,6 +234,17 @@ def _parse_charge_points(raw: bytes) -> pd.DataFrame:
         }
     )
 
+    return installations
+
+
+def _aggregate_sites(installations: pd.DataFrame) -> pd.DataFrame:
+    """Installations -> the `sites` canonical frame.
+
+    Split out from parsing so that a source delivered as several raw files
+    aggregates across all of them: co-located installations that happen to
+    land in different files must still collapse into one site. Aggregating
+    per file and concatenating the results would leave them as duplicates.
+    """
     sites = (
         installations.groupby("site_id", sort=True)
         .agg(
@@ -266,10 +283,15 @@ def canonicalise(source: str, *, root: Path = DATA_ROOT) -> Path:
         raise FileNotFoundError(
             f"no raw file under {raw_dir}; run fetch({source!r}, start=..., end=...) first"
         )
-    raw_path = raw_files[0]
-    raw_bytes = raw_path.read_bytes()
-
-    sites = _parse_charge_points(raw_bytes)
+    # Every file, not just raw_files[0]. The docstring's `*` is the contract,
+    # and reading one file silently produced a short table with no error --
+    # masked here only because the registry currently ships as one file.
+    # #8 (SMARD/DWD) is date-partitioned, where many files is the normal case.
+    blobs = [p.read_bytes() for p in raw_files]
+    installations = pd.concat(
+        [_parse_installations(b) for b in blobs], ignore_index=True
+    )
+    sites = _aggregate_sites(installations)
     require_columns(sites, ["site_id", *_SITE_COLUMNS])
 
     canonical_dir = Path(root) / "canonical"
@@ -278,14 +300,22 @@ def canonicalise(source: str, *, root: Path = DATA_ROOT) -> Path:
     out_path = canonical_dir / f"{table}.parquet"
     sites.to_parquet(out_path, index=False)
 
-    retrieved_at = datetime.fromtimestamp(raw_path.stat().st_mtime, tz=timezone.utc).isoformat()
+    # Newest input wins, and the digest covers every file in sorted-name order
+    # so provenance describes what was actually read rather than one of N.
+    retrieved_at = datetime.fromtimestamp(
+        max(p.stat().st_mtime for p in raw_files), tz=timezone.utc
+    ).isoformat()
     meta_doc = {
         "source_url": SOURCES[source].url,
         "license": SOURCES[source].license,
         "retrieved_at": retrieved_at,
         "rows": int(len(sites)),
         "resolution_min": SOURCES[source].resolution_min,
-        "sha256": hashlib.sha256(raw_bytes).hexdigest(),
+        "sha256": (
+            hashlib.sha256(blobs[0]).hexdigest()
+            if len(blobs) == 1
+            else hashlib.sha256(b"".join(blobs)).hexdigest()
+        ),
     }
     meta_path = canonical_dir / f"{table}.meta.json"
     meta_path.write_text(json.dumps(meta_doc, indent=2, sort_keys=True) + "\n", encoding="utf-8")
