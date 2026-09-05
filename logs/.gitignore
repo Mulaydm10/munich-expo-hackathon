@@ -1,0 +1,3 @@
+# This file itself and README.md are un-ignored by the top-level .gitignore's whitelist rule
+# (logs/* + !logs/README.md + !logs/.gitignore). Everything else placed under logs/ stays
+# gitignored by default — see logs/README.md for the EXP-#### directory convention.

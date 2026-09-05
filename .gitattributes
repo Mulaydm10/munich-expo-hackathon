@@ -1,0 +1,10 @@
+# Normalize line endings across contributors/OSes.
+* text=auto eol=lf
+
+# Treat common binary/doc types as binary (no diff/merge text-mangling).
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.pdf binary
+*.ico binary
