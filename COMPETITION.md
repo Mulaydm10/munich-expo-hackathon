@@ -32,7 +32,7 @@ with a plausible value; a fabricated deadline or rubric weight is worse than a b
   challenge locked. No team, no project draft, no submission created as of 2026-09-05.
   Participation mode is **unset** — the selector lives on https://munichtechexpo.com/apply/hackathon
   (online-only free / hybrid / on-site, the latter two requiring an attendee ticket), not in the
-  registration flow. No ticket held. `TODO(Mulaydm10)`: decide online-only vs on-site.
+  registration flow. No ticket held. Tracked as an open action, `Q-0008`, not as a settled fact.
 
 ## Deadline
 - **Working assumption (plan against this):** Sunday **20 September 2026, 17:00 Europe/Berlin

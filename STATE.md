@@ -39,6 +39,10 @@ earlier one. See `COMPETITION.md`; do not restate the date anywhere else.
   contact may be made without the Main Agent's explicit authorization.
 - Organizers' sample charging dataset is only handed out at the on-site briefing (`Q-0007`). Nothing
   in the build depends on it, by design.
+- **`Q-0008`: participation mode is unset and no attendee ticket is held.** Human-only, and unlike
+  the other open questions it is an action rather than an answer — tickets can sell out, so its
+  real deadline is unknown and earlier than the 20th. Nothing in the build depends on it; the right
+  to submit does.
 
 ## Next intended step
 Workers take #7 and #9; design reviews and keeps the queue ≥2 deep per active lane. First runnable

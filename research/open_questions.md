@@ -64,3 +64,24 @@ The challenge page says the anonymized sample sessions are handed out at the on-
 20 Sep 13:00 CEST); nothing is downloadable. The build therefore treats it as an optional
 validation set, never a dependency (`contracts/src/fleet.md`). If it arrives, the fleet lane
 back-tests its synthetic sessions against it and reports the gap honestly.
+
+### Q-0008 — Which participation mode, and is an attendee ticket held?
+**Opened:** 2026-09-05
+**Status:** Open — **human-only, and the only item here that can lose the submission outright**
+Registration `HKP-2026-IC3JYX` exists, but participation mode is unset: the selector is on
+https://munichtechexpo.com/apply/hackathon (online-only free / hybrid / on-site, the latter two
+needing an attendee ticket), not in the flow we completed. No ticket is held.
+
+This is not a fact awaiting an organizer's answer like `Q-0003`–`Q-0007`; it is an action awaiting
+Mulaydm10, and it is tracked here rather than in `COMPETITION.md`'s facts table precisely because a
+line in a facts table reads as settled. Two things make it worse than its neighbours: a wrong
+deadline costs planning slack whereas no valid mode costs the submission, and tickets can sell out,
+so the real deadline is unknown and earlier than 20 Sep.
+
+Interacts with `Q-0004` (if teams of 2–6 turn out to be mandatory, team formation is an on-site
+event at Sun 20 Sep 10:00 — which is unreachable on an online-only mode) and with `Q-0007` (the
+organizers' sample dataset is handed out at the on-site briefing). Neither the build nor the demo
+depends on the outcome, by design; the right to submit does.
+
+`TODO(Mulaydm10)`: pick a mode and, if it is hybrid or on-site, buy the ticket. No agent can do
+this, and no agent may contact the organizers about it without explicit authorization.
