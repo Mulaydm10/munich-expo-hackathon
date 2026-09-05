@@ -1,0 +1,5 @@
+# The root .gitattributes normalizes text files to LF and lets git guess
+# text-vs-binary. This fixture's whole point is to be the real registry
+# download byte-for-byte (UTF-8 BOM, CRLF, German locale) so its checked-in
+# sha256 stays truthful; `binary` (-text) stops git from touching it.
+*.csv binary
