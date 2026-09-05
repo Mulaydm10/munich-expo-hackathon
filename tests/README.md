@@ -2,7 +2,7 @@
 
 # tests/ — conventions
 
-Baseline exists as of 2026-09-01 (`ADR-0002` accepted): `pytest` on Python 3.12, one green smoke
+Baseline exists as of 2026-09-05 (`ADR-0002` accepted): `pytest` on Python 3.12, one green smoke
 test per lane. `python3 -m pytest tests -q` → 10 passed on a clean checkout with no data downloaded.
 
 ## Layout

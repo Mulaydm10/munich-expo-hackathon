@@ -6,7 +6,7 @@ disagree about what is true *now*, **STATE wins** — the worklog only explains 
 Note for bus workers: this is the *project* snapshot. The bus's lane/claim state lives in
 `docs/STATE.md` and is written only under the `claim/state` lock. Two different files, on purpose.
 
-Last updated: 2026-09-01 (design node session, kickoff)
+Last updated: 2026-09-05 (design node session, post-merge)
 
 ## Deadline + time remaining
 **Sun 20 Sep 2026, 17:00 Europe/Berlin (CEST)** — working assumption. A second official source
@@ -22,13 +22,17 @@ earlier one. See `COMPETITION.md`; do not restate the date anywhere else.
 - Architecture split into nine real lanes with a design-owned contract each
   (`contracts/CONVENTIONS.md` + `contracts/src/<lane>.md`), replacing the `src/00_scaffold`
   placeholder. Data flow: data → fleet → forecast → grid/market/sched → service → ui/voice.
+- Design PR #5 merged as `6518d017`, both canaries green (pre-merge #13 on the design tip,
+  post-merge #4 on the merge commit with a real dependency install). Gate #6 closed, so the eight
+  lane issues are claimable and the pinned Board is #16.
 
 ## In flight
-- Design PR from `bot/join-real-lane-split` carrying everything above, for the human to merge.
-  It changes `docs/verify.txt` + `requirements-dev.txt`, so it needs a worker-authored pre-merge
-  canary and a post-merge canary commit (`AGENTS.md`) — requested from Claude on the canary issues.
-- First `status:queued` lane issues for the upstream lanes (`src/data`, `src/fleet`, `src/forecast`,
-  `src/grid`).
+- Eight `status:queued` lane issues, none claimed yet: #7/#8 (`src/data`), #9 (`src/fleet`),
+  #10/#11 (`src/forecast`), #12 (`src/grid`), #14 (`src/market`), #15 (`src/sched`). Start pair is
+  #7 + #9 — independent, and everything downstream consumes their outputs.
+- No lane has an implementation yet: every `src/<lane>/api.py` is a stub and each
+  `tests/src/<lane>/` holds one placeholder, so `python3 -m pytest tests -q` (10 passed) proves the
+  harness and nothing about the thesis.
 
 ## Blocked
 - `Q-0003` (exact deadline) and `Q-0004` (solo vs 2–6 team) need an organizer answer. No organizer
@@ -37,10 +41,13 @@ earlier one. See `COMPETITION.md`; do not restate the date anywhere else.
   in the build depends on it, by design.
 
 ## Next intended step
-Merge the design PR (human), then keep the lane queue ≥2 deep per active lane while workers
-implement upstream-first. First runnable end-to-end target is a single Munich site for one
-historical date: real prices + real registry entry → synthetic sessions → quantile forecast →
-envelope → schedule → euros. `DEMO.md` gets its first `DEMO-0001` scenario the moment that runs.
+Workers take #7 and #9; design reviews and keeps the queue ≥2 deep per active lane. First runnable
+end-to-end target is a single Munich site for one historical date: real prices + real registry entry
+→ synthetic sessions → quantile forecast → envelope → schedule → euros. `DEMO.md` gets its first
+`DEMO-0001` scenario the moment that runs.
+
+Human-only, still outstanding: read the two LOCKED files (#5 landed without your sign-off), decide
+`Q-0003`/`Q-0004`, and merge — design does not call the merge endpoint.
 
 ## Latest experiment
 - (none yet — see `experiments/experiment_log.md`)
@@ -51,4 +58,5 @@ moment you stop — a stale claim blocks others worse than no claim at all.
 
 | Claimed by | Surface | Claimed at | Status |
 |---|---|---|---|
-| devin-ai-integration[bot] (design) | governance + contracts + docs (`bot/join-real-lane-split`) | 2026-09-01 | Released on PR open — lane work is the workers' |
+| devin-ai-integration[bot] (design) | governance + contracts + docs (`bot/join-real-lane-split`) | 2026-09-05 | Released — merged as `6518d017` |
+| devin-ai-integration[bot] (design) | post-merge state + date correction (`design/…-post-merge-state`) | 2026-09-05 | Released on PR open |

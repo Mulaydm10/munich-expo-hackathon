@@ -2,7 +2,7 @@
 
 # VISION.md — the thesis
 
-Filled in 2026-09-01, resolving `Q-0001`. Challenge: *Mobility & Automotive: EV Charging Load
+Filled in 2026-09-05, resolving `Q-0001`. Challenge: *Mobility & Automotive: EV Charging Load
 Predictor* (see `COMPETITION.md` — that file, not this one, owns event facts).
 
 ## What we're building
