@@ -1,16 +1,14 @@
 # Munich Expo Hackathon — .gitignore
 #
-# Stack-agnostic on purpose: the stack is undecided (see
-# design/decisions/ADR-0002-stack-selection.md). This file intentionally does NOT commit to
-# Python/Node/etc-specific build-artifact ignores yet; whoever resolves that ADR should extend
-# this file in the same change as the canonical commands + smoke test.
+# Stack is Python 3.12 only (design/decisions/ADR-0002-stack-selection.md, Accepted).
+# There is deliberately no node/npm section: adding one needs a new ADR, not an ignore rule.
 #
-# IMPORTANT — this repo will later be grafted onto the agent-bus multi-agent protocol, which
-# expects test fixtures under tests/ to be trackable. Do NOT add blanket data-file patterns here
-# (bare *.csv, *.json, *.parquet, data/, etc.) — `git add` silently skips ignored files, so a
-# fixture that only exists on disk passes locally and fails in CI. If a future edit to this file
-# adds such a pattern, it MUST be paired with a `!tests/**` (or narrower) negation immediately
-# after it. See the negation guard at the bottom of this file.
+# IMPORTANT — the agent-bus protocol (AGENTS.md) expects test fixtures under tests/ to stay
+# trackable, and lanes are tested against checked-in fixtures rather than downloads. `git add`
+# silently skips ignored files, so a fixture that only exists on disk passes locally and fails in
+# CI. The data-file patterns below are paired with the `!tests/**` negation guard at the bottom of
+# this file; anything similar added later must stay above that guard. After adding a fixture,
+# verify with `git check-ignore -v <path>` — do not assume.
 
 # OS cruft
 .DS_Store
@@ -35,14 +33,31 @@ logs/*
 scratch/*
 !scratch/.gitignore
 
-# agent-bus (grafted; from agent-bus-template's default Python runtime — swap when
-# design/decisions/ADR-0002-stack-selection.md resolves the stack)
+# Python
 __pycache__/
+*.py[cod]
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
 .venv/
+venv/
+*.egg-info/
+
+# Downloaded + generated datasets and trained models. Every one of these is reproducible from
+# `src.data.fetch` + a seed (contracts/CONVENTIONS.md); none of it belongs in git. Note the
+# !tests/** guard below keeps checked-in fixtures under tests/ trackable regardless.
+# NOTE the leading slash: root-anchored, or it would also swallow the `src/data/` LANE.
+/data/
+*.parquet
+*.feather
+*.joblib
 
 # --- Safety-net negation guard for tests/ fixtures ---
 # Whatever gets ignored above (or added above in the future), never let it swallow anything under
-# tests/. This is a deliberate belt-and-suspenders re-inclusion, not evidence a broad pattern
-# exists above yet — it's here pre-emptively because this repo grafts onto agent-bus later.
+# tests/. This now guards real patterns (data/, *.parquet), so keep it last.
 !tests/**
+
+# ...except build artifacts, which the guard above would otherwise re-include. Last rule wins in
+# git, so these two must stay BELOW `!tests/**`, and any new fixture-guard must stay above them.
+tests/**/__pycache__/
+tests/**/*.py[cod]

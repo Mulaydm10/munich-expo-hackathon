@@ -1,42 +1,61 @@
 # ADR-0002: Stack selection
 
-**Status:** Proposed (open)
-**Date:** 2026-09-05
-**Related:** Q-0002
+**Status:** Accepted (2026-09-01)
+**Date:** 2026-09-05 (opened) · 2026-09-01 (decided)
+**Related:** Q-0002 (closed by this ADR), Q-0001 / `VISION.md`
 
 ## Context
-No stack has been chosen. The idea/track isn't even chosen yet (`VISION.md` is `TBD`), so
-committing to a language/runtime now would be a guess dressed up as a decision. Whoever picks the
-idea will have a much better sense of what stack actually fits (data-heavy? real-time? front-end
-heavy? agent/LLM orchestration?).
+The idea is now chosen (`VISION.md`): a data- and optimisation-heavy simulation of Germany's public
+charge-point registry, with quantile forecasting, a physical site model, an LP scheduler, a market
+simulation, and a map-based demo. Nine lanes are built in parallel by several agent sessions
+(`docs/STATE.md`), and CI runs one verify command per lane from a design-owned file — so the runtime
+is not just a preference, it is the thing every lane's green depends on.
+
+Constraints that actually decide it:
+- **One runtime, or canary tax.** `docs/setup.sh` and `requirements-dev.txt` are canary-gated: every
+  toolchain added costs a pre- and post-merge canary and a slower `run` job for all nine lanes.
+- **The heavy work is numerical**, not I/O concurrency: quantile regression, an LP per site, a
+  thermal difference equation, correlation across thousands of series.
+- **Demo-day risk.** A build step that can fail on conference wifi in front of judges is a real
+  failure mode, and a `node_modules` install is exactly that.
+- Deadline is hours of build time, not weeks (`COMPETITION.md`).
 
 ## Options considered
-`TODO(Mulaydm10)`: list real candidates once the idea firms up. Placeholder shape:
-- Option A — e.g. a Python-based stack — pros/cons once there's an idea to evaluate it against
-- Option B — e.g. a TypeScript/Node-based stack — pros/cons
-- Option C — polyglot / split front-end+back-end — pros/cons
-
-## Decision criteria
-`TODO(Mulaydm10)`, but at minimum weigh:
-- Team's existing familiarity (fastest path to a working demo under deadline)
-- What the demo actually needs to show (latency-sensitive? data pipeline? UI-heavy?)
-- Anything the event's hard rules constrain (see `COMPETITION.md` once filled — e.g. required
-  platform, disallowed dependencies)
+- **A — Python everywhere, front-end from CDN.** numpy/pandas/pyarrow/scipy/scikit-learn for the
+  modelling, FastAPI + Jinja2 to serve, front-end libraries loaded from a pinned CDN URL with an
+  integrity hash. One `pip install`, no bundler, no lockfile drift.
+  *Cons:* front-end ergonomics are worse than a modern JS toolchain; large-array work in the browser
+  needs care.
+- **B — TypeScript/Node everywhere.** Excellent UI story, single language.
+  *Cons:* the numerical stack does not exist at parity — quantile GBMs, LP solvers and the thermal
+  model would all be hand-rolled or wrapped. Unacceptable risk on the parts that carry the thesis.
+- **C — Polyglot: Python back end + Vite/React front end.** Best UI ergonomics.
+  *Cons:* two toolchains in CI (canary tax ×2, slower `run` for every lane), a node install on the
+  demo machine, and a cross-language contract at the one seam that must not break under time
+  pressure. The UI gain does not pay for it in a one-day build.
 
 ## Decision
-**Not yet decided.** Do not infer a default from this repo's absence of config files — that
-absence is deliberate, not an oversight.
+**Option A.** Python 3.12 for every lane, including the UI lane, which is Jinja2 templates plus
+hand-written ES modules served by FastAPI. Front-end libraries (map + charts) come from a pinned CDN
+with an integrity hash; nothing is bundled, transpiled or installed at demo time.
+
+Dependency set is fixed in `requirements-dev.txt`; adding one is an `agent:devin` issue, not a
+worker commit, because that file is what CI executes.
 
 ## Consequences
-Whoever resolves this ADR (flips Status to Accepted, fills in the chosen stack) must, **in the same
-change**:
-1. Update `CLAUDE.md`'s "Canonical commands" section (currently `TODO(Mulaydm10)`) with real
-   build/test/run commands.
-2. Land a green smoke test in `tests/` and remove the "no baseline" language from
-   `tests/README.md`.
-3. Extend `.gitignore` with stack-specific build-artifact ignores (still respecting the
-   `!tests/**` negation guard already in place).
+Landed **in the same change** as this ADR (as this ADR required of whoever resolved it):
+1. `CLAUDE.md` "Canonical commands" filled with real setup/test/run commands.
+2. A green smoke test per lane (`tests/src/<lane>/test_lane_surface.py`) and `docs/verify.txt`
+   rewritten to the real nine lanes; `tests/README.md`'s "no baseline" language removed. Verified:
+   `python3 -m pytest tests -q` → 10 passed.
+3. `.gitignore` extended with `.venv/`, `data/` and Python artefacts, respecting the `!tests/**`
+   negation guard.
 
-Landing the stack choice without the smoke test in the same change is exactly the failure mode this
-ADR exists to prevent — a scaffold whose test command fails on first invocation trains everyone to
-bypass the tooling forever.
+Ongoing:
+- No node toolchain enters this repo without a new ADR. "Just add Vite for the map" is the change
+  this decision exists to refuse.
+- If browser-side performance on the national map becomes the bottleneck, the answer is
+  server-side aggregation in `src/service` (bin by zoom level), not a front-end build step.
+- Python-side performance: vectorise, chunk by site, and decompose the national run into per-site
+  problems (`contracts/src/sched.md`). If a hot loop still dominates, profile and rewrite that loop
+  with numpy — do not reach for a second language.
