@@ -285,9 +285,34 @@ def _step_state(
     return new_o, new_h
 
 
+def _no_nan(series: pd.Series, name: str) -> None:
+    """Reject NaN rather than absorbing it.
+
+    This is a safety envelope, and NaN was silently the *most permissive*
+    input: `_solve_k_for_target` bisects on `(new_o + new_h) > target_rise`,
+    and a NaN target makes that comparison False on every iteration, so the
+    search takes the `else` branch every time and converges to the ceiling.
+    Observed: an ambient series with one NaN held max_kw pinned at 427.5 for
+    the whole window where clean input fell to 379.5 -- missing data granted
+    maximum permission, with no error and no `clipped` flag.
+
+    A conservative substitute would be worse than raising: it would hide the
+    fact that the ambient feed has a hole.
+    """
+    bad = int(series.isna().sum())
+    if bad:
+        first = series.index[series.isna()][0]
+        raise ValueError(
+            f"{name} contains {bad} NaN value(s) (first at {first}); "
+            "a thermal envelope cannot be computed from missing data"
+        )
+
+
 def _validate_aligned(load_kw: pd.Series, ambient_c: pd.Series) -> None:
     if len(load_kw) != len(ambient_c):
         raise ValueError("load_kw and ambient_c must be the same length")
+    _no_nan(load_kw, "load_kw")
+    _no_nan(ambient_c, "ambient_c")
     if isinstance(load_kw.index, pd.DatetimeIndex) and isinstance(
         ambient_c.index, pd.DatetimeIndex
     ):
@@ -382,11 +407,17 @@ def thermal_envelope(
     post-mortem this rule exists to avoid repeating) -- assert this stays
     rare/False in normal-range scenarios in any caller that cares.
     """
+    # thermal_envelope does not route through _validate_aligned (it has no
+    # load series of its own), so it must reject NaN itself -- see _no_nan
+    # for why NaN was the most permissive input rather than the safest.
+    _no_nan(ambient_c, "ambient_c")
+
     idx = ambient_c.index
     dt = _dt_minutes(idx)
 
     delta_o, delta_h = 0.0, 0.0
     if prior_load_kw is not None and len(prior_load_kw) > 0:
+        _no_nan(prior_load_kw, "prior_load_kw")
         warm_ambient = pd.Series(float(ambient_c.iloc[0]), index=prior_load_kw.index)
         _, delta_o, delta_h = _simulate(prior_load_kw, warm_ambient, site, 0.0, 0.0)
 

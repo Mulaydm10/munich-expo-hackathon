@@ -10,6 +10,8 @@ tests so the thermal/phase logic is exercised independently of
 from __future__ import annotations
 
 import numpy as np
+import re
+
 import pandas as pd
 import pytest
 
@@ -357,3 +359,58 @@ def test_infer_electrical_different_seeds_can_differ():
     # Not asserting they MUST differ (a collision is technically possible),
     # just that both are internally valid and independently reproducible.
     assert len(result_a[site_id].point_phase) == len(result_b[site_id].point_phase) == 8
+
+
+# --- NaN must not be the most permissive input -------------------------------
+# Found in review of PR #21. `_solve_k_for_target` bisects on
+# `(new_o + new_h) > target_rise`; a NaN target makes that comparison False on
+# every iteration, so the search takes the `else` branch each time and
+# converges to the ceiling. Measured before the fix: an ambient series with one
+# NaN held max_kw pinned at 427.5 across the whole window, where clean input
+# fell to 379.5 by the same row. Missing data granted maximum permission, with
+# no exception and without setting `clipped`.
+
+
+def test_nan_ambient_is_rejected_not_silently_maximised():
+    site = _site()
+    idx = _idx(8)
+    ambient = pd.Series([20.0] * 8, index=idx)
+    clean = api.thermal_envelope(site, ambient)
+
+    dirty = ambient.copy()
+    dirty.iloc[3] = float("nan")
+    with pytest.raises(ValueError, match="ambient_c contains 1 NaN"):
+        api.thermal_envelope(site, dirty)
+
+    # Guard the guard: the clean series must actually decline, otherwise
+    # "NaN pins at maximum" would be indistinguishable from correct output
+    # and this test would pass for the wrong reason.
+    assert clean["max_kw"].iloc[3] < clean["max_kw"].iloc[0]
+
+
+def test_nan_prior_load_is_rejected():
+    site = _site()
+    idx = _idx(8)
+    prior = pd.Series([50.0] * 8, index=idx)
+    prior.iloc[2] = float("nan")
+    with pytest.raises(ValueError, match="prior_load_kw contains 1 NaN"):
+        api.thermal_envelope(site, pd.Series([20.0] * 8, index=idx), prior_load_kw=prior)
+
+
+def test_nan_load_is_rejected_by_hotspot_temperature():
+    site = _site()
+    idx = _idx(8)
+    load = pd.Series([50.0] * 8, index=idx)
+    load.iloc[1] = float("nan")
+    with pytest.raises(ValueError, match="load_kw contains 1 NaN"):
+        api.hotspot_temperature(load, pd.Series([20.0] * 8, index=idx), site)
+
+
+def test_nan_rejection_names_the_first_offending_timestamp():
+    """The message is the operator's only clue which feed has a hole."""
+    site = _site()
+    idx = _idx(8)
+    ambient = pd.Series([20.0] * 8, index=idx)
+    ambient.iloc[5] = float("nan")
+    with pytest.raises(ValueError, match=re.escape(str(idx[5]))):
+        api.thermal_envelope(site, ambient)
