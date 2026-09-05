@@ -107,7 +107,8 @@ class Product:
     min_bid_kw: float
     granularity_kw: float
     notice_period_min: float
-    penalty_multiplier: float  # applied to the block's own energy price, per kWh of shortfall
+    penalty_multiplier: float  # default rate, applied to |the block's own energy price|, per kWh
+    # of shortfall; settle()'s penalty_multiplier= kwarg overrides this per call for scenario runs
     source: str
 
     def __post_init__(self) -> None:
@@ -198,10 +199,16 @@ def firm_capacity(quantiles: pd.DataFrame, *, tau: float = 0.05, floor_kw: float
     nan_mask = lo.isna()
     lo_filled = lo.fillna(0.0)
 
+    # Tracked (and exposed below) regardless of whether it crosses the raise threshold: a
+    # 40%-inverted frame that doesn't trip the >0.5 guard must still leave a trace, not
+    # proceed invisibly. A rate asserted only where it binds can't distinguish a working
+    # measurement from one stuck at 0%.
+    lower_above_median_rate = 0.0
     if med_col in quantiles.columns:
         med = quantiles[med_col].fillna(0.0)
         bad = (lo_filled > med + 1e-9) & ~nan_mask
         frac_bad = float(bad.mean()) if len(bad) else 0.0
+        lower_above_median_rate = frac_bad
         if frac_bad > 0.5:
             raise MarketError(
                 f"quantiles frame looks mislabelled: the tau={tau} column ({lo_col}) exceeds "
@@ -221,6 +228,7 @@ def firm_capacity(quantiles: pd.DataFrame, *, tau: float = 0.05, floor_kw: float
     out.attrs["floor_clamp_rate"] = float(floor_bound.mean()) if len(floor_bound) else 0.0
     out.attrs["nan_quantile_rate"] = float(nan_mask.mean()) if len(nan_mask) else 0.0
     out.attrs["negative_quantile_rate"] = float(negative_input.mean()) if len(negative_input) else 0.0
+    out.attrs["lower_above_median_rate"] = lower_above_median_rate
     out.attrs["tau"] = tau
     return out
 
@@ -257,18 +265,29 @@ def bid(pool_firm: pd.DataFrame, product: str, prices: pd.DataFrame) -> pd.DataF
     price_df["block_start"] = price_df["t"].dt.floor(block_len_str)
     price_by_block = price_df.groupby("block_start")["capacity_price_eur_mw_h"].mean()
 
-    expected_rows_per_block = spec.block_length_min / 15.0
+    expected_rows_per_block = int(round(spec.block_length_min / 15.0))
 
     n_raw = 0
     n_rounddown_bind = 0
     n_dropped_below_min = 0
-    n_partial_coverage = 0
 
     out_rows = []
     for block_start, grp in firm_df.groupby("block_start"):
         n_raw += 1
-        if len(grp) < expected_rows_per_block:
-            n_partial_coverage += 1
+
+        # A block's committed window is the full block_length_min, so it must be backed by
+        # a forecast row for every 15-min interval in that window -- not fewer (a gap we'd be
+        # selling capacity for with no forecast at all) and not more (duplicates/misassigned
+        # rows). Counting the shortfall and bidding anyway is itself the coercion this guards
+        # against, so this raises rather than merely tracking a rate.
+        expected_grid = pd.date_range(block_start, periods=expected_rows_per_block, freq="15min")
+        if set(grp["t"]) != set(expected_grid):
+            raise MarketError(
+                f"bid(): block starting {block_start} has {grp['t'].nunique()} distinct 15-min "
+                f"forecast row(s), not the {expected_rows_per_block} needed to cover the full "
+                f"{int(spec.block_length_min)}-minute committed window; refusing to sell "
+                "capacity for a period with no forecast backing it"
+            )
 
         capacity_kw_raw = float(grp["pool_firm_kw"].min())
         capacity_kw = float(np.floor(capacity_kw_raw / spec.granularity_kw) * spec.granularity_kw)
@@ -300,14 +319,34 @@ def bid(pool_firm: pd.DataFrame, product: str, prices: pd.DataFrame) -> pd.DataF
     out.attrs["blocks_dropped_below_minimum"] = n_dropped_below_min
     out.attrs["blocks_dropped_rate"] = (n_dropped_below_min / n_raw) if n_raw else 0.0
     out.attrs["blocks_rounddown_bind_rate"] = (n_rounddown_bind / n_raw) if n_raw else 0.0
-    out.attrs["blocks_partial_coverage"] = n_partial_coverage
     return out
 
 
-def settle(bids: pd.DataFrame, delivered: pd.DataFrame, prices: pd.DataFrame) -> pd.DataFrame:
+def _penalty_rate_eur_per_kwh(avg_energy_price_eur_mwh: float, multiplier: float) -> tuple[float, bool]:
+    """Non-negative EUR/kWh penalty rate for a shortfall, priced off the block's own average
+    energy price and `multiplier`. A negative day-ahead price is a genuine German market
+    condition (and correlates with exactly the hours a downward-flexibility product gets
+    dispatched), so it must never flip a non-delivery into a reward -- this always prices off
+    the *magnitude* of the price, never its sign. Returns (rate, was_negative_price) so the
+    caller can track how often the clamp actually bound."""
+    was_negative = avg_energy_price_eur_mwh < 0.0
+    rate = abs(avg_energy_price_eur_mwh) / 1000.0 * multiplier
+    return rate, was_negative
+
+
+def settle(
+    bids: pd.DataFrame,
+    delivered: pd.DataFrame,
+    prices: pd.DataFrame,
+    *,
+    penalty_multiplier: float | None = None,
+) -> pd.DataFrame:
     """block, capacity_kw, delivered_kw, capacity_revenue_eur, energy_cost_eur, penalty_eur,
-    net_eur. Penalty rule comes from PRODUCTS (via `bids.attrs['product']`), is cited, and is
-    applied on every shortfall -- a settlement that cannot go negative is not a settlement.
+    net_eur. Penalty rate comes from PRODUCTS by default (via `bids.attrs['product']`), cited in
+    `.attrs['penalty_rule_source']`; pass `penalty_multiplier` to run an explicit scenario at a
+    different rate instead (e.g. "what if the multiplier were 4x") -- either way the multiplier
+    actually used is surfaced in `.attrs['penalty_multiplier']`, never left implicit. Applied on
+    every shortfall -- a settlement that cannot go negative is not a settlement.
     """
     _require_columns(bids, ["block_start", "block_end", "capacity_kw", "expected_revenue_eur"])
     _require_columns(prices, ["t", "energy_price_eur_mwh"])
@@ -320,55 +359,115 @@ def settle(bids: pd.DataFrame, delivered: pd.DataFrame, prices: pd.DataFrame) ->
             "cannot look up the penalty rule without knowing the product"
         )
 
-    if "block_start" in delivered.columns and "delivered_kw" in delivered.columns and \
-            len(delivered) == delivered["block_start"].nunique():
-        delivered_by_block = delivered.set_index("block_start")["delivered_kw"]
+    multiplier = spec.penalty_multiplier if penalty_multiplier is None else float(penalty_multiplier)
+    multiplier_source = (
+        spec.source if penalty_multiplier is None
+        else f"override: caller-supplied penalty_multiplier={multiplier}x (scenario parameter, "
+             f"lane default is {spec.penalty_multiplier}x per {spec.source})"
+    )
+
+    # Pre-aggregated calling convention: caller already resolved one delivered_kw value per
+    # block (no per-interval detail available to check), used as-is.
+    use_preaggregated = (
+        "block_start" in delivered.columns and "delivered_kw" in delivered.columns
+        and len(delivered) == delivered["block_start"].nunique()
+    )
+    if use_preaggregated:
+        delivered_scalar_by_block = delivered.set_index("block_start")["delivered_kw"]
     else:
         _require_columns(delivered, ["t", "delivered_kw"])
-        delivered_by_block = {}
-        for row in bids.itertuples(index=False):
-            mask = (delivered["t"] >= row.block_start) & (delivered["t"] < row.block_end)
-            sub = delivered.loc[mask, "delivered_kw"]
-            delivered_by_block[row.block_start] = float(sub.mean()) if len(sub) else float("nan")
 
     price_series = prices.set_index("t")["energy_price_eur_mwh"]
+    expected_rows_per_block = int(round(spec.block_length_min / 15.0))
 
     rows = []
+    n_negative_price = 0
+    n_shortfall = 0
     for row in bids.itertuples(index=False):
         block_start, block_end = row.block_start, row.block_end
         capacity_kw, cap_revenue = float(row.capacity_kw), float(row.expected_revenue_eur)
         block_hours = (block_end - block_start).total_seconds() / 3600.0
 
-        if isinstance(delivered_by_block, dict):
-            delivered_kw = delivered_by_block.get(block_start, float("nan"))
-        else:
-            delivered_kw = delivered_by_block.get(block_start, float("nan"))
-        if pd.isna(delivered_kw):
-            raise MarketError(
-                f"settle(): no delivered reading for block {block_start}; a missing delivery "
-                "record must not be treated as either full or zero delivery"
-            )
-        delivered_kw = float(delivered_kw)
-
-        mask = (price_series.index >= block_start) & (price_series.index < block_end)
-        block_prices = price_series[mask]
+        mask_price = (price_series.index >= block_start) & (price_series.index < block_end)
+        block_prices = price_series[mask_price]
         if len(block_prices) == 0:
             raise MarketError(f"settle(): no energy price available for block {block_start}")
         avg_energy_price_eur_mwh = float(block_prices.mean())
 
-        shortfall_kw = max(capacity_kw - delivered_kw, 0.0)
-        shortfall_kwh = shortfall_kw * block_hours
-        penalty_eur = shortfall_kwh * (avg_energy_price_eur_mwh / 1000.0) * spec.penalty_multiplier
+        if use_preaggregated:
+            delivered_kw = delivered_scalar_by_block.get(block_start, float("nan"))
+            if pd.isna(delivered_kw):
+                raise MarketError(
+                    f"settle(): no delivered reading for block {block_start}; a missing "
+                    "delivery record must not be treated as either full or zero delivery"
+                )
+            delivered_kw = float(delivered_kw)
+            shortfall_kwh = max(capacity_kw - delivered_kw, 0.0) * block_hours
+            delivered_kwh = max(delivered_kw, 0.0) * block_hours
+            delivered_kw_report = delivered_kw
+        else:
+            mask = (delivered["t"] >= block_start) & (delivered["t"] < block_end)
+            sub = delivered.loc[mask].sort_values("t")
+            if len(sub) == 0:
+                raise MarketError(
+                    f"settle(): no delivered reading for block {block_start}; a missing "
+                    "delivery record must not be treated as either full or zero delivery"
+                )
 
-        delivered_kwh = max(delivered_kw, 0.0) * block_hours
+            # Full-block coverage, checked against the exact 15-min grid the block commits
+            # to -- never just "at least one reading". A single reading (or any strict
+            # subset of the grid) must not be averaged over and stretched across the whole
+            # block: that is precisely how a partially-reported block gets settled as if it
+            # were fully reported, and how intra-block over-delivery masks a real shortfall
+            # elsewhere in the same block (both #24-review-flagged shapes share this root
+            # cause).
+            expected_grid = pd.date_range(block_start, periods=expected_rows_per_block, freq="15min")
+            if set(sub["t"]) != set(expected_grid):
+                raise MarketError(
+                    f"settle(): block {block_start} has {sub['t'].nunique()} distinct 15-min "
+                    f"delivery reading(s), not the {expected_rows_per_block} needed to cover "
+                    "the full committed window; a partially-reported block must not be "
+                    "settled as if it were completely reported"
+                )
+            if sub["delivered_kw"].isna().any():
+                raise MarketError(f"settle(): NaN delivered_kw reading(s) within block {block_start}")
+
+            sub_by_t = sub.set_index("t")["delivered_kw"].reindex(expected_grid)
+            delivered_vals = sub_by_t.to_numpy(dtype="float64")
+            boundaries = list(expected_grid) + [block_end]
+            interval_hours = np.array([
+                (boundaries[i + 1] - boundaries[i]).total_seconds() / 3600.0
+                for i in range(len(expected_grid))
+            ])
+
+            # Shortfall is clipped to zero PER INTERVAL, before summing -- not on a
+            # block-level mean. Over-delivery in one interval must never offset
+            # under-delivery in another: the promise is per-interval, so the penalty has to
+            # be too.
+            per_interval_shortfall_kw = np.clip(capacity_kw - delivered_vals, 0.0, None)
+            shortfall_kwh = float(np.sum(per_interval_shortfall_kw * interval_hours))
+            delivered_kwh = float(np.sum(np.clip(delivered_vals, 0.0, None) * interval_hours))
+            delivered_kw_report = float(np.mean(delivered_vals))
+
+        # Penalty rate is priced off |price|, never a signed price: a negative day-ahead
+        # price (a real German day-ahead condition) must never flip a non-delivery penalty
+        # into a reward.
+        penalty_rate_eur_per_kwh, was_negative_price = _penalty_rate_eur_per_kwh(
+            avg_energy_price_eur_mwh, multiplier
+        )
+        if was_negative_price:
+            n_negative_price += 1
+        penalty_eur = shortfall_kwh * penalty_rate_eur_per_kwh
+        if shortfall_kwh > 1e-9:
+            n_shortfall += 1
+
         energy_cost_eur_val = delivered_kwh * (avg_energy_price_eur_mwh / 1000.0)
-
         net_eur = cap_revenue - energy_cost_eur_val - penalty_eur
 
         rows.append({
             "block": block_start,
             "capacity_kw": capacity_kw,
-            "delivered_kw": delivered_kw,
+            "delivered_kw": delivered_kw_report,
             "capacity_revenue_eur": cap_revenue,
             "energy_cost_eur": energy_cost_eur_val,
             "penalty_eur": penalty_eur,
@@ -380,15 +479,30 @@ def settle(bids: pd.DataFrame, delivered: pd.DataFrame, prices: pd.DataFrame) ->
                                        "penalty_eur", "net_eur"])
     out.attrs["product"] = product_name
     out.attrs["penalty_rule_source"] = spec.source
-    out.attrs["penalty_bind_rate"] = float((out["penalty_eur"] > 0).mean()) if len(out) else 0.0
+    out.attrs["penalty_multiplier"] = multiplier
+    out.attrs["penalty_multiplier_source"] = multiplier_source
+    # Bind rate is measured off the physical shortfall (shortfall_kwh > 0), never off the
+    # sign of penalty_eur -- a 100% shortfall during negative prices must still show a 100%
+    # bind rate, not a 0% one just because the (now-fixed) euro amount happens to be small.
+    out.attrs["penalty_bind_rate"] = float(n_shortfall / len(rows)) if rows else 0.0
+    out.attrs["negative_energy_price_rate"] = float(n_negative_price / len(rows)) if rows else 0.0
     return out
 
 
 def _aggregate_load(load_kw: pd.DataFrame) -> pd.DataFrame:
+    _require_columns(load_kw, ["load_kw"])
+    # A missing (NaN) load reading must raise, matching the lane's existing policy for a
+    # missing price or carbon-intensity record -- never propagate silently into a NaN total
+    # (or, via a group-sum's default skipna, into a silently-wrong non-NaN total).
+    if load_kw["load_kw"].isna().any():
+        n_missing = int(load_kw["load_kw"].isna().sum())
+        raise MarketError(
+            f"{n_missing} load_kw reading(s) are missing (NaN); a missing load record must "
+            "raise a MarketError, never silently resolve to NaN or a wrong total downstream"
+        )
     if "site_id" in load_kw.columns:
         agg = load_kw.groupby("t")["load_kw"].sum().reset_index()
     else:
-        _require_columns(load_kw, ["load_kw"])
         agg = load_kw[["t", "load_kw"]].copy()
     return agg.sort_values("t").reset_index(drop=True)
 
