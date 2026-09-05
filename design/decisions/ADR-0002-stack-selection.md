@@ -1,7 +1,7 @@
 # ADR-0002: Stack selection
 
-**Status:** Accepted (2026-09-01)
-**Date:** 2026-09-05 (opened) · 2026-09-01 (decided)
+**Status:** Accepted (2026-09-05)
+**Date:** 2026-09-05 (opened) · 2026-09-05 (decided)
 **Related:** Q-0002 (closed by this ADR), Q-0001 / `VISION.md`
 
 ## Context

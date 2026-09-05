@@ -7,7 +7,7 @@ rule.** If you find a duplicated deadline, rubric row, or hard rule anywhere els
 delete it there and replace it with a link to the relevant section of this file. A stale copy of a
 deadline is the single most expensive kind of drift in a timed event.
 
-Filled in on 2026-09-01 from the organizers' own pages (event site + Devpost), read in a browser
+Filled in on 2026-09-05 from the organizers' own pages (event site + Devpost), read in a browser
 while signed in. Two facts below are **contradicted between official sources** and are recorded as
 contradictions, not resolved by choosing the nicer one — see `Q-0003` and `Q-0004` in
 `research/open_questions.md`. Anything still `TBD` is genuinely unpublished. Do not fill a `TBD`
@@ -29,7 +29,7 @@ with a plausible value; a fabricated deadline or rubric weight is worse than a b
   pricing. A sample anonymized charging-session dataset is stated to be provided **at the challenge
   briefing**, not for download (see Data, below).
 - **Our registration:** participant Dhruv Ranjit Mulay, registration ID `HKP-2026-IC3JYX`,
-  challenge locked. No team, no project draft, no submission created as of 2026-09-01.
+  challenge locked. No team, no project draft, no submission created as of 2026-09-05.
   Participation mode is **unset** — the selector lives on https://munichtechexpo.com/apply/hackathon
   (online-only free / hybrid / on-site, the latter two requiring an attendee ticket), not in the
   registration flow. No ticket held. `TODO(Mulaydm10)`: decide online-only vs on-site.
@@ -85,7 +85,7 @@ ElevenLabs Creator; the linked ElevenLabs Hacker Guide says 1 free month) — `Q
 ## Team roster
 | Name | Role | Contact |
 |---|---|---|
-| Dhruv Ranjit Mulay | participant (solo as of 2026-09-01) | via registration `HKP-2026-IC3JYX` |
+| Dhruv Ranjit Mulay | participant (solo as of 2026-09-05) | via registration `HKP-2026-IC3JYX` |
 
 **Team-size rule is contradicted between official sources (`Q-0004`):** Devpost states teams of
 **2–6 members**; the rules page also says individuals may take part. One project per team, one team
