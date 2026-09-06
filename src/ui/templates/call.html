@@ -13,9 +13,22 @@
 {% block content %}
 {% call m.screen_body(error) %}
 
+{# The button POSTs a `ReductionEvent` -- {call_t, notice_min, duration_min,
+   reduction_kw}, the field names src/sched/api.py declares and the shape
+   contracts/src/service.md's dispatch route requires. Every field is the API's; this
+   page picks none of them, because picking a reduction size or a notice period in
+   JavaScript is computing, which contracts/src/ui.md forbids this lane outright.
+   The event is handed to the module as JSON, exactly like every other payload -- the
+   previous version POSTed the literal body "{}", which a validating service rejects,
+   so the headline action of the demo could not produce promised-vs-delivered at all. #}
+{% set event_ok = has_value(reduction_event, "call_t")
+                  and has_value(reduction_event, "notice_min")
+                  and has_value(reduction_event, "duration_min")
+                  and has_value(reduction_event, "reduction_kw") %}
 <section class="screen-lede">
   <button type="button" id="dispatch" class="dispatch-button" data-testid="dispatch-button"
           aria-keyshortcuts="d"
+          {% if not (dispatch_url and event_ok) %}disabled{% endif %}
           {% if dispatch_url %}data-dispatch-url="{{ dispatch_url }}"{% endif %}>
     Dispatch the reduction <span class="kbd-inline"><kbd>d</kbd></span>
   </button>
@@ -23,6 +36,25 @@
   <p class="value-missing" data-testid="dispatch-url-missing">
     No dispatch URL provided by API — the button cannot fire. This is a missing route
     parameter, not a scenario with nothing to dispatch.
+  </p>
+  {% endif %}
+  {% if event_ok %}
+  <p class="event-request" data-testid="dispatch-request">
+    Pressing this POSTs the reduction event the API specified:
+    <strong>{{ reduction_event.reduction_kw | num(1) }}</strong> <span class="unit">kW</span>
+    sustained for <strong>{{ reduction_event.duration_min | num(0) }}</strong>
+    <span class="unit">min</span>, called at
+    <strong>{{ reduction_event.call_t | berlin }}</strong> (Europe/Berlin) with
+    <strong>{{ reduction_event.notice_min | num(0) }}</strong> <span class="unit">min</span>
+    of notice.
+  </p>
+  {{ m.payload_json("reduction-event", reduction_event) }}
+  {% else %}
+  <p class="value-missing" data-testid="reduction-event-missing">
+    No <code>ReductionEvent</code> provided by API — the button cannot fire. It needs
+    <code>call_t</code>, <code>notice_min</code>, <code>duration_min</code> and
+    <code>reduction_kw</code>; this page will not invent them and will not POST an
+    empty body a validating service would reject.
   </p>
   {% endif %}
 </section>

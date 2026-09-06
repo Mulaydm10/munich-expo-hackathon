@@ -26,7 +26,7 @@
 {% endmacro %}
 
 
-{% macro warnings_list(warnings) %}
+{% macro warnings_list(warnings, error=none) %}
 {# contracts/CONVENTIONS.md: "any coercion is observable"; contracts/src/ui.md:
    "warnings[] is rendered, not swallowed". Rendered unconditionally whenever the list
    is non-empty -- never behind a click, never summarised away. Each entry may be a
@@ -58,6 +58,14 @@
     {% endfor %}
   </ul>
 </section>
+{% elif error %}
+{# "The pipeline reported no warnings" is a claim about a response we never got. On the
+   error branch the honest statement is that the warning list is unknown -- the same
+   zero-vs-unknown distinction the figures make. #}
+<p class="warnings-empty" data-testid="warnings-unknown">
+  Pipeline warnings: <strong>unknown</strong> — the request failed, so this page never
+  received a warnings list. This is not a clean run; it is no run.
+</p>
 {% else %}
 <p class="warnings-empty" data-testid="warnings-empty">
   Pipeline warnings: none reported for this scenario.

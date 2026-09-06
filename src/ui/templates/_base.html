@@ -36,9 +36,13 @@
 
 <h1 class="screen-title">{{ SCREEN_TITLES[screen] }}</h1>
 
-{% if not error %}
-{{ macros.warnings_list(warnings) }}
-{% endif %}
+{# Rendered on EVERY page state, error included. A response can carry both an `error`
+   and a populated `warnings[]`, and the version of this page that hid the warnings
+   whenever `error` was truthy destroyed exactly the evidence contracts/src/ui.md calls
+   un-swallowable -- the failure is when the pipeline degraded AND then failed, which is
+   when a judge most needs to know what it had already assumed or clipped. The error
+   banner suppresses the CHARTS (screen_body), never the warnings. #}
+{{ macros.warnings_list(warnings, error) }}
 
 <main>
 {% block content %}{% endblock %}

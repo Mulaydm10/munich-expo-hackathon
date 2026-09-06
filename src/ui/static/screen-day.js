@@ -5,7 +5,7 @@
 // Every series is plotted straight off /api/scenario/{id}/timeseries. Missing points
 // break the line rather than being interpolated: a gap must look like a gap.
 
-import { readPayload, drawUnavailable, scaler, extent, berlinClock } from "./payload.js";
+import { readPayload, drawUnavailable, scaler, extent, berlinClock, runs } from "./payload.js";
 
 const canvas = document.getElementById("day-canvas");
 const rows = readPayload("intervals");
@@ -34,20 +34,29 @@ if (canvas && !Array.isArray(rows)) {
   const yPrice = priceExt ? scaler(priceExt[0], priceExt[1], H - PAD.b, PAD.t) : null;
 
   function line(key, { dash = [], width = 3, colour = "#000" } = {}) {
+    const yFor = key === "price_eur_mwh" ? yPrice : yKw;
     ctx.save();
     ctx.setLineDash(dash);
     ctx.lineWidth = width;
     ctx.strokeStyle = colour;
-    ctx.beginPath();
-    let open = false;
-    rows.forEach((r, i) => {
-      const v = r[key];
-      if (typeof v !== "number" || !Number.isFinite(v)) { open = false; return; }
-      const px = x(i);
-      const py = key === "price_eur_mwh" ? yPrice(v) : yKw(v);
-      if (!open) { ctx.moveTo(px, py); open = true; } else { ctx.lineTo(px, py); }
-    });
-    ctx.stroke();
+    for (const run of runs(rows, key)) {
+      if (run.length === 1) {
+        // An isolated point has no segment to stroke. A dot keeps a datum the API did
+        // send from vanishing into what a viewer would read as a gap.
+        ctx.beginPath();
+        ctx.arc(x(run[0].i), yFor(run[0].v), Math.max(2, width), 0, Math.PI * 2);
+        ctx.fillStyle = colour;
+        ctx.fill();
+        continue;
+      }
+      ctx.beginPath();
+      run.forEach((pt, n) => {
+        const px = x(pt.i);
+        const py = yFor(pt.v);
+        if (n === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      });
+      ctx.stroke();
+    }
     ctx.restore();
   }
 
@@ -55,15 +64,20 @@ if (canvas && !Array.isArray(rows)) {
     ctx.save();
     ctx.fillStyle = colour;
     ctx.globalAlpha = 0.18;
-    ctx.beginPath();
-    ctx.moveTo(x(0), yKw(0));
-    rows.forEach((r, i) => {
-      const v = r[key];
-      if (typeof v === "number" && Number.isFinite(v)) ctx.lineTo(x(i), yKw(v));
-    });
-    ctx.lineTo(x(rows.length - 1), yKw(0));
-    ctx.closePath();
-    ctx.fill();
+    // ONE POLYGON PER CONTIGUOUS RUN. The single-polygon version skipped missing rows
+    // and joined the survivors, so a gap in envelope_kw or firm_kw came out as shaded
+    // area spanning it — capacity drawn where the API sent no data, which is the same
+    // lie as a flat line at zero, only harder to see. The line renderer already broke
+    // at gaps; the band did not, so the two disagreed on the same chart.
+    for (const run of runs(rows, key)) {
+      if (run.length < 2) continue;   // a single point has no area; do not invent one
+      ctx.beginPath();
+      ctx.moveTo(x(run[0].i), yKw(0));
+      for (const pt of run) ctx.lineTo(x(pt.i), yKw(pt.v));
+      ctx.lineTo(x(run[run.length - 1].i), yKw(0));
+      ctx.closePath();
+      ctx.fill();
+    }
     ctx.restore();
   }
 

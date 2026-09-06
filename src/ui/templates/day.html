@@ -29,14 +29,22 @@
   <output id="play-clock" class="play-clock" data-testid="play-clock">
     {{ intervals[0].t | berlin_clock }}
   </output>
+  {# The API's SSE stream is advertised here and NOT consumed: play() scrubs the
+     recorded response above. `contracts/src/ui.md` asks for SSE playback and this page
+     owes it; issue #37 item 8 is the follow-up. The URL stays in `data-stream` so the
+     module that eventually reads it needs no template change, but the sentence a judge
+     reads must not call it the playback source while a setInterval drives the cursor.
+     Claiming live playback we do not perform is the same defect class as a chart that
+     draws zero for missing data. #}
   {% if stream_url %}
   <span class="stream-url" data-testid="stream-url" data-stream="{{ stream_url }}">
-    playback source: <code>{{ stream_url }}</code>
+    Playback is a scrub of the <strong>recorded response above</strong>, not live.
+    The API offered an SSE stream at <code>{{ stream_url }}</code>; this page does not
+    consume it yet (issue #37, item 8).
   </span>
   {% else %}
   <span class="stream-url" data-testid="stream-url-missing">
-    Live playback unavailable: no stream URL provided by API. Scrubbing the recorded
-    response instead.
+    No stream URL provided by API. Playback is a scrub of the recorded response above.
   </span>
   {% endif %}
 </div>
@@ -66,11 +74,23 @@
     <tr data-testid="series-{{ key }}">
       <th scope="row">{{ label }}</th>
       <td><code>{{ key }}</code></td>
+      {# Asked of EVERY interval, not of intervals[0]. The canvas plots any point that
+         is a finite number, so a series that starts at interval 12 is on the chart; a
+         table that read only the first row printed "series not drawn" next to a drawn
+         line, which teaches a judge to distrust the table rather than the chart. The
+         partial count is the honest third state between drawn and absent. #}
+      {% set drawn = series_point_count(intervals, key) %}
       <td>
-        {% if has_value(intervals[0], key) %}
-        <span class="unit">{{ key | unit_for_key }}</span>
-        {% else %}
+        {% if drawn == 0 %}
         <span class="value-missing" data-testid="missing-series-{{ key }}">{{ MISSING_LABEL }} — series not drawn</span>
+        {% else %}
+        <span class="unit">{{ key | unit_for_key }}</span>
+        {% if drawn < intervals | length %}
+        <span class="value-partial" data-testid="partial-series-{{ key }}">
+          drawn from {{ drawn }} of {{ intervals | length }} intervals — the line breaks
+          at the gaps, which are missing data and not zeroes
+        </span>
+        {% endif %}
         {% endif %}
       </td>
     </tr>

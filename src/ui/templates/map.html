@@ -38,8 +38,8 @@
 </div>
 
 <table class="legend" data-testid="map-legend">
-  <caption>Legend — firm capacity per site (display buckets only; each site's own
-    <code>firm_kw</code> is shown on hover)</caption>
+  <caption>Legend — firm capacity per site (display buckets only; hover a site to read
+    its own <code>firm_kw</code> in the readout above)</caption>
   <thead><tr><th scope="col">Range</th><th scope="col">Mark</th></tr></thead>
   <tbody>
     {% for low, high, mark in MAP_LEGEND_BINS %}
@@ -51,6 +51,14 @@
       <td>{{ mark }}</td>
     </tr>
     {% endfor %}
+    {# Not a bucket: a site the API sent with no firm_kw at all. It has no range, so it
+       cannot be the 0-50 row, and it must not be drawn as one -- "promises almost
+       nothing" and "we do not know what it promises" are opposite facts. Deliberately
+       carries no kW figure, because there is none. #}
+    <tr data-testid="legend-unknown">
+      <th scope="row">{{ MAP_UNKNOWN_LABEL }}</th>
+      <td>{{ MAP_UNKNOWN_MARK }}</td>
+    </tr>
   </tbody>
 </table>
 
