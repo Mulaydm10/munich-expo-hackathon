@@ -155,7 +155,11 @@ def test_the_map_hit_tests_for_the_hover_figure_the_legend_promises() -> None:
     front of judges is not testable here and has NOT been verified in a browser.
     """
     js = source("screen-map.js")
-    assert "siteAt(" in js
+    # Definition AND call site. Asserting only the call let a revert that renamed the
+    # function away still pass, which is the same weakness this whole file has to guard
+    # against: a check that cannot fail is not evidence.
+    assert "function siteAt(px, py) {" in js
+    assert "const hit = siteAt(" in js
     assert 'addEventListener("pointermove"' in js
     assert 'addEventListener("pointerleave"' in js
     assert "renderReadout" in js
