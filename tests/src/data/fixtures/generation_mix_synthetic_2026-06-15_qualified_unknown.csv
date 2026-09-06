@@ -1,0 +1,13 @@
+# SYNTHETIC FIXTURE - authored for FlexGrid issue #59, not a real SMARD download.
+# Identical generation numbers to the _baseline fixture, so intensity_g_kwh must
+# come out IDENTICAL; the only difference is the header shape.
+# Plus one extra column: 'Sonstige Konventionelle', which has NO known emission
+# factor, carrying a resolution qualifier. It must land in the EXCLUDED bucket,
+# not vanish -- so excluded_generation_mwh_share_mean must DIFFER from the
+# baseline. That difference is what proves the audit metric can actually see a
+# dropped column; identical metrics across the two runs was the #59 bug.
+Datum von;Datum bis;Braunkohle [MWh];Steinkohle [MWh];Erdgas [MWh];Kernenergie [MWh];Wind Onshore [MWh];Wind Offshore [MWh];Photovoltaik [MWh];Biomasse [MWh];Wasserkraft [MWh];Pumpspeicher [MWh];Sonstige Konventionelle [MWh] Berechnete Auflösungen
+15.06.2026 12:00;15.06.2026 13:00;20,00;10,00;15,00;0,00;25,00;5,00;40,00;10,00;5,00;2,00;4,00
+15.06.2026 13:00;15.06.2026 14:00;18,00;9,00;14,00;0,00;27,00;5,00;42,00;10,00;5,00;1,00;4,00
+15.06.2026 14:00;15.06.2026 15:00;16,00;8,00;13,00;0,00;29,00;5,00;38,00;9,00;5,00;1,00;4,00
+15.06.2026 15:00;15.06.2026 16:00;15,00;7,00;12,00;0,00;31,00;5,00;35,00;9,00;4,00;0,00;4,00
