@@ -325,6 +325,187 @@ def test_a_complete_event_leaves_the_button_live(reduction_event: dict) -> None:
     assert button is not None and "disabled" not in button.group(1)
 
 
+# --- #40 item 1: render() builds a default event when the service sent none ------
+
+def test_call_screen_builds_a_default_event_from_the_days_intervals(
+    dispatch: dict, intervals: list[dict]
+) -> None:
+    """The core of #40 finding 1: with no `reduction_event` in the context but the
+    day's `intervals` present, the button must come up LIVE with a real, POST-able
+    event -- not permanently disabled waiting for a field nothing in production sends.
+    """
+    html = api.render("call", {"dispatch": dispatch, "dispatch_url": "/d", "intervals": intervals})
+    assert "reduction-event-missing" not in html
+    button = re.search(r'data-testid="dispatch-button"(.*?)>', html, re.S)
+    assert button is not None and "disabled" not in button.group(1)
+    payload = re.search(r'id="payload-reduction-event">(.*?)</script>', html, re.S)
+    assert payload is not None
+    posted = json.loads(payload.group(1))
+    assert posted == api.default_reduction_event(intervals)
+    assert api.reduction_event_valid(posted) is True
+
+
+def test_call_screen_without_intervals_or_event_still_disables_the_button(dispatch: dict) -> None:
+    """The avoid-it end: no `reduction_event` AND no `intervals` to build one from must
+    reach the same honest "missing" state as before -- this fix must not turn into a
+    silent default that fires even when there is nothing to build one from."""
+    html = api.render("call", {"dispatch": dispatch, "dispatch_url": "/d"})
+    assert 'data-testid="reduction-event-missing"' in html
+
+
+def test_call_screen_never_overrides_an_explicit_reduction_event(
+    reduction_event: dict, intervals: list[dict]
+) -> None:
+    """An explicit event from `src/service` wins even when `intervals` is also present
+    -- render() must not silently replace the service's own answer with a computed one.
+    """
+    html = api.render(
+        "call",
+        {"dispatch_url": "/d", "reduction_event": reduction_event, "intervals": intervals},
+    )
+    payload = re.search(r'id="payload-reduction-event">(.*?)</script>', html, re.S)
+    assert payload is not None
+    assert json.loads(payload.group(1)) == reduction_event
+    computed = api.default_reduction_event(intervals)
+    assert reduction_event != computed  # the fixture and the computed default differ
+
+
+# --- #40 item 2: presence is not validity -----------------------------------------
+
+def test_a_present_but_invalid_event_is_told_apart_from_a_missing_one(reduction_event: dict) -> None:
+    """The button must stay disabled either way, but the two are different facts an
+    operator needs (mirrors "zero and unknown must never look the same"): a service bug
+    that sent a malformed event must not read on screen exactly like no event at all."""
+    invalid = {**reduction_event, "duration_min": -5.0}
+    html = api.render("call", {"dispatch_url": "/d", "reduction_event": invalid})
+    assert 'data-testid="reduction-event-invalid"' in html
+    assert 'data-testid="reduction-event-missing"' not in html
+    assert "payload-reduction-event" not in html
+    button = re.search(r'data-testid="dispatch-button"(.*?)>', html, re.S)
+    assert button is not None and "disabled" in button.group(1)
+
+
+@pytest.mark.parametrize(
+    "mutation, description",
+    [
+        ({"call_t": "2026-10-25T16:00:00"}, "naive call_t enables the button"),
+        ({"notice_min": "15"}, "a numeric string notice_min enables the button"),
+        ({"notice_min": True}, "a bool notice_min enables the button"),
+        ({"duration_min": 0.0}, "a zero duration_min enables the button"),
+        ({"reduction_kw": -1.0}, "a negative reduction_kw enables the button"),
+    ],
+)
+def test_a_present_but_wire_invalid_event_never_enables_the_button(
+    reduction_event: dict, mutation: dict, description: str
+) -> None:
+    """Issue #40 finding 2 in one parametrized sweep: `event_ok` used to be four
+    `has_value()` presence checks, so every one of these mutations left the button live
+    and POSTed a payload the service would 400 on. Each must now disable it."""
+    invalid = {**reduction_event, **mutation}
+    html = api.render("call", {"dispatch_url": "/d", "reduction_event": invalid})
+    button = re.search(r'data-testid="dispatch-button"(.*?)>', html, re.S)
+    assert button is not None and "disabled" in button.group(1), description
+    assert "payload-reduction-event" not in html, description
+
+
+# --- #40 follow-up: "let the operator adjust it" ----------------------------------
+
+def _input_value(html: str, field: str) -> str | None:
+    m = re.search(rf'data-testid="input-{field}"[^>]*value="([^"]*)"', html, re.S)
+    return m.group(1) if m else None
+
+
+def test_the_form_prefills_with_the_computed_default(intervals: list[dict]) -> None:
+    """The operator must see the default before touching anything -- an empty form
+    with no starting point is not "adjustable", it's a blank the operator has to fill
+    in from nothing."""
+    html = api.render("call", {"dispatch_url": "/d", "intervals": intervals})
+    default = api.default_reduction_event(intervals)
+    assert 'data-testid="reduction-event-form"' in html
+    assert _input_value(html, "call_t") == default["call_t"]
+    assert _input_value(html, "notice_min") == str(default["notice_min"])
+    assert _input_value(html, "duration_min") == str(default["duration_min"])
+    assert _input_value(html, "reduction_kw") == str(default["reduction_kw"])
+
+
+def test_an_edited_valid_value_is_what_gets_posted_not_the_default(
+    reduction_event: dict, intervals: list[dict]
+) -> None:
+    """The heart of the follow-up: a judge asking "what if the operator wanted 200 kW
+    instead?" must get a page that actually POSTs 200 kW, not the original default."""
+    edited = {**reduction_event, "reduction_kw": "200"}
+    html = api.render(
+        "call",
+        {"dispatch_url": "/d", "intervals": intervals, "reduction_event_input": edited},
+    )
+    payload = re.search(r'id="payload-reduction-event">(.*?)</script>', html, re.S)
+    assert payload is not None
+    posted = json.loads(payload.group(1))
+    assert posted["reduction_kw"] == 200.0
+    assert posted != api.default_reduction_event(intervals)
+    button = re.search(r'data-testid="dispatch-button"(.*?)>', html, re.S)
+    assert button is not None and "disabled" not in button.group(1)
+    # The form reflects what was just applied, not the original default, on reload.
+    assert _input_value(html, "reduction_kw") == "200.0"
+
+
+def test_an_edited_invalid_value_disables_the_button_via_the_same_gate(
+    reduction_event: dict,
+) -> None:
+    """The edited path must go through `reduction_event_valid()` -- the SAME function,
+    not a second copy of the rules -- so an operator typo reaches the existing
+    presence-vs-validity distinction from defect 2 rather than a new failure mode."""
+    edited = {**reduction_event, "duration_min": "-5"}
+    html = api.render("call", {"dispatch_url": "/d", "reduction_event_input": edited})
+    assert 'data-testid="reduction-event-invalid"' in html
+    assert "payload-reduction-event" not in html
+    button = re.search(r'data-testid="dispatch-button"(.*?)>', html, re.S)
+    assert button is not None and "disabled" in button.group(1)
+    # And the operator sees their own mistyped value back, not a silently corrected one.
+    assert _input_value(html, "duration_min") == "-5.0"
+
+
+def test_an_emptied_field_does_not_coerce_to_zero(reduction_event: dict) -> None:
+    """Requirement #3 verbatim: an empty numeric field is unknown, not zero, and
+    `reduction_kw: 0.0` would be a real, valid, dispatchable event that promises
+    nothing. Clearing the field must disable the button, not quietly zero it and fire."""
+    cleared = {**reduction_event, "reduction_kw": ""}
+    html = api.render("call", {"dispatch_url": "/d", "reduction_event_input": cleared})
+    assert "payload-reduction-event" not in html
+    assert '"reduction_kw": 0' not in html
+    assert '"reduction_kw":0' not in html
+    button = re.search(r'data-testid="dispatch-button"(.*?)>', html, re.S)
+    assert button is not None and "disabled" in button.group(1)
+    # An emptied field is missing, not present-and-invalid: the other three fields are
+    # still complete and valid, but the event as a whole is incomplete.
+    assert 'data-testid="reduction-event-missing"' in html
+
+
+def test_no_edit_submitted_yet_falls_back_to_the_default_unaffected(
+    intervals: list[dict],
+) -> None:
+    """`reduction_event_input` absent (not merely empty) must mean "no submission
+    yet" -- the ordinary default-construction path from finding 1 must still work
+    exactly as before this follow-up."""
+    html = api.render("call", {"dispatch_url": "/d", "intervals": intervals})
+    payload = re.search(r'id="payload-reduction-event">(.*?)</script>', html, re.S)
+    assert payload is not None
+    assert json.loads(payload.group(1)) == api.default_reduction_event(intervals)
+
+
+def test_the_forms_field_names_are_exactly_the_four_reduction_event_keys() -> None:
+    """Nothing else may ride along in the query string this form produces: no CSRF
+    token, no field named after the submit control, no fifth field."""
+    html = api.render("call", {"dispatch_url": "/d"})
+    form = re.search(r'data-testid="reduction-event-form".*?</form>', html, re.S)
+    assert form is not None
+    names = set(re.findall(r'<input[^>]*\bname="([^"]+)"', form.group(0)))
+    assert names == api.REDUCTION_EVENT_KEYS
+    # The submit control must not carry a name (an unnamed button contributes nothing
+    # to a form's GET query string).
+    assert not re.search(r'<button[^>]*\btype="submit"[^>]*\bname=', form.group(0))
+
+
 # --- #37 item 7: "not drawn" is decided over every interval, not over the first ---
 
 def _intervals_missing(rows: list[dict], key: str, keep: set[int]) -> list[dict]:

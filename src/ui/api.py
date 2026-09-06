@@ -45,12 +45,28 @@ and then, per screen:
            `dispatch_url`   : the POST target for the dispatch button
            `reduction_event`: the `ReductionEvent` the button must POST --
                           {call_t, notice_min, duration_min, reduction_kw}, the field
-                          names `src/sched/api.py::ReductionEvent` declares. This lane
-                          does NOT invent it: `contracts/src/ui.md` forbids computing
-                          anything, and choosing a reduction size or a notice period in
-                          JavaScript would be exactly that. When the service does not
-                          send one the button is disabled and says why, because an
-                          empty POST body is a request the service must reject.
+                          names `src/sched/api.py::ReductionEvent` declares. `src/service`
+                          may supply one directly; when it does not, `render()` builds a
+                          default from `intervals` (below) via `default_reduction_event()`
+                          -- see that function's docstring for issue #40's finding that
+                          nothing in production ever supplied this key, permanently
+                          disabling the call screen's one action. A field this lane still
+                          will not invent is validated separately by
+                          `reduction_event_valid()`, because a `has_value()` presence
+                          check alone let strings, booleans and negative durations enable
+                          the button (issue #40 finding 2).
+           `intervals`  : OPTIONAL -- the same `/api/scenario/{id}/timeseries` rows the
+                          day screen renders. Used only to build a default
+                          `reduction_event` when the service did not send one; never
+                          displayed on this screen.
+           `reduction_event_input`: OPTIONAL -- raw string values from `call.html`'s
+                          adjust-event form (issue #40 follow-up), keyed by the same
+                          four field names, as a caller (`src/service`) would read off
+                          a resubmitted form/query string. When present, `render()`
+                          builds the screen's `reduction_event` from THIS instead of
+                          `intervals` or any prior `reduction_event` -- see
+                          `build_reduction_event_from_input()`. Absent (not merely
+                          empty) means "the operator has not submitted the form yet".
   pooling  `curve`      : [{n_sites, firm_kw_per_site, shortfall_rate}]
                           (`/api/scenario/{id}/pooling`, i.e. `diversification_curve` rows)
   ledger   `totals`     : `ScenarioResult.totals`
@@ -331,6 +347,246 @@ def berlin_clock(value: Any) -> str:
     return dt.strftime("%H:%M %z")
 
 
+# --- ReductionEvent: construction and validity (issue #40) -----------------------
+
+# The German market's native resolution (contracts/CONVENTIONS.md, "Time"): the
+# shortest notice period that means anything at this resolution, and the grain
+# `default_reduction_event` assumes each recorded interval covers.
+NATIVE_INTERVAL_MIN = 15.0
+
+# The exact field set `src.sched.api.ReductionEvent` declares (that module's own
+# docstring calls the shape a "GUESS": no contract file specifies these fields). The
+# design owner read src/service's actual wire validator (`_event_from_body`,
+# src/service/api.py, on the still-unmerged claim/28) and confirmed it 400s on a body
+# carrying anything other than exactly these four keys -- so both the default this lane
+# builds and the validity gate below match this set precisely, never a superset or
+# subset of it.
+REDUCTION_EVENT_KEYS: frozenset[str] = frozenset(
+    {"call_t", "notice_min", "duration_min", "reduction_kw"}
+)
+
+
+def _parse_utc_datetime(value: Any) -> _dt.datetime | None:
+    """Like `to_berlin`, but returns a UTC-aware `datetime` for arithmetic rather than a
+    Berlin-local one for display -- kept separate so nothing that computes a duration or
+    validates a notice period goes through a Berlin conversion and back. Same refusal
+    rule as `to_berlin`: `None` for anything falsy, naive, or unparseable; never a
+    guessed timezone.
+    """
+    if value is None or value == "" or isinstance(value, bool):
+        return None
+    if isinstance(value, _dt.datetime):
+        dt = value
+    else:
+        try:
+            dt = _dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if dt.tzinfo is None or dt.tzinfo.utcoffset(dt) is None:
+        return None
+    return dt.astimezone(_dt.timezone.utc)
+
+
+def _is_finite_real(value: Any) -> bool:
+    """True for a value that survives as a JSON number and is safe to feed to
+    `src.sched.dispatch`'s `np.isfinite` guards: an `int` or `float`, never a `bool`
+    (Python's `bool` is an `int` subclass, so a naive `isinstance(x, (int, float))`
+    check alone lets a checkbox value through), and never NaN or +/-inf.
+    """
+    return not isinstance(value, bool) and isinstance(value, (int, float)) and _math.isfinite(value)
+
+
+def default_reduction_event(intervals: Any) -> dict[str, Any] | None:
+    """A sensible default `ReductionEvent`, built from a day's timeseries rows (the
+    `/api/scenario/{id}/timeseries` shape: `t, ..., price_eur_mwh, firm_kw`), so the call
+    screen's dispatch button is not permanently disabled in production waiting on a field
+    `src/service` never sends. Issue #40 finding 1: 135 green tests over a dead button,
+    because the only supplier of `reduction_event` anywhere in the repo was a test
+    fixture. `contracts/src/ui.md` forbids computing a displayed figure in JavaScript;
+    this computes one in Python, once, server-side -- the issue that raised finding 1
+    names constructing the event as explicitly this lane's job, not `src/service`'s or
+    `src/sched`'s. The operator still sees every field before pressing the button
+    (`call.html`'s `dispatch-request` paragraph), and nothing here widens the wire shape
+    `src/service`'s dispatch route accepts (see `REDUCTION_EVENT_KEYS`).
+
+    Every number traces to the scenario's own timeseries, never an invented constant:
+
+      call_t        the start of the interval -- excluding the day's LAST interval,
+                    which has no room for a compliance window after it -- with the
+                    HIGHEST `price_eur_mwh`: the moment shedding this site's load is
+                    worth the most, read off the scenario's own price series.
+      notice_min    `NATIVE_INTERVAL_MIN` (15) -- the shortest notice period that means
+                    anything at the market's native 15-minute resolution
+                    (contracts/CONVENTIONS.md, "Time").
+      duration_min  the distance from `call_t + notice_min` to one interval past the
+                    day's LAST recorded interval. This is the longest window that still
+                    (a) contains at least one interval of this scenario's day and (b)
+                    never runs past it -- the two conditions the design owner's read of
+                    `src/service`'s dispatch route enforces (a compliance window with no
+                    interval of the day, or one that overruns it, is a 400).
+      reduction_kw  the MINIMUM `firm_kw` across every interval after `call_t` -- the
+                    worst-interval floor this site can actually promise for the rest of
+                    the day, the same "measure the physical quantity, not the derived
+                    one" reading `src.sched`'s own `reduction_kw_achieved` uses
+                    (contracts/CONVENTIONS.md), not an average or a single favourable
+                    interval's value.
+
+    Returns `None` (never a fabricated event) when `intervals` cannot supply all four
+    ingredients: fewer than two rows carry a tz-aware `t`, a finite `price_eur_mwh`, and
+    a finite, non-negative `firm_kw`, once duplicate timestamps are collapsed. `render()`
+    leaves `reduction_event` unset in that case, and the call screen renders its existing
+    honest "no ReductionEvent" state.
+    """
+    rows: list[dict[str, Any]] = []
+    seen: set[_dt.datetime] = set()
+    if isinstance(intervals, (list, tuple)):
+        for row in intervals:
+            if not isinstance(row, Mapping):
+                continue
+            t = _parse_utc_datetime(row.get("t"))
+            price = row.get("price_eur_mwh")
+            firm = row.get("firm_kw")
+            if t is None or t in seen:
+                continue
+            if not _is_finite_real(price) or not _is_finite_real(firm) or firm < 0:
+                continue
+            seen.add(t)
+            t_raw = row.get("t")
+            rows.append(
+                {
+                    "t": t,
+                    "t_wire": t_raw if isinstance(t_raw, str) else t.isoformat(),
+                    "price": float(price),
+                    "firm_kw": float(firm),
+                }
+            )
+    rows.sort(key=lambda r: r["t"])
+    if len(rows) < 2:
+        return None
+
+    call_row = max(rows[:-1], key=lambda r: r["price"])
+    call_index = rows.index(call_row)
+    last_t = rows[-1]["t"]
+
+    duration_min = (last_t - call_row["t"]).total_seconds() / 60.0
+    if not duration_min > 0:
+        return None  # unreachable: call_index < len(rows) - 1 and every t is unique/sorted
+
+    reduction_kw = min(r["firm_kw"] for r in rows[call_index + 1 :])
+
+    return {
+        "call_t": call_row["t_wire"],
+        "notice_min": float(NATIVE_INTERVAL_MIN),
+        "duration_min": float(duration_min),
+        "reduction_kw": float(reduction_kw),
+    }
+
+
+def build_reduction_event_from_input(raw: Any) -> dict[str, Any]:
+    """A candidate `ReductionEvent`, built from the four raw values an operator typed
+    into `call.html`'s adjust-event form (issue #40's follow-up: the issue's "let the
+    operator adjust it" is part of the requirement, not colour). `raw` is a mapping of
+    the same four field names to whatever a browser form submission carries -- plain
+    strings, one per field the form always names, whether the operator touched it or
+    left the pre-filled default alone.
+
+    This does exactly two things and nothing else, so `reduction_event_valid()` --
+    called on the result by the same one template expression that already gates the
+    computed default -- remains the ONLY place that decides whether the outcome may be
+    POSTed. There is no second copy of the validity rules here:
+
+      - An EMPTY field (absent, `None`, or a string that is blank after stripping)
+        becomes an ABSENT key, never a coerced zero. "Zero and unknown must never look
+        the same" (contracts/CONVENTIONS.md) applies to a cleared form field exactly as
+        it does to an API response: `reduction_kw: 0.0` is a real, valid event that
+        promises nothing, and silently producing one because the operator cleared the
+        box would be the exact coercion this project's own history warns against.
+      - A non-empty string for `notice_min`, `duration_min` or `reduction_kw` is parsed
+        as a `float` when it parses as one; when it does not (`"fifteen"`, `"1e"`, a
+        thousands-separated `"1,000"`, ...) it is passed through UNCHANGED -- the exact
+        string the operator typed -- so `reduction_event_valid()`, which requires a
+        real `int`/`float`, rejects it for what it actually is instead of this function
+        silently discarding or defaulting it. This is the one coercion this function
+        performs (string -> float on a value that parses); the fixtures around this
+        function pin both ends of it: a numeric string that survives and a
+        non-numeric one that does not.
+      - `call_t` is never parsed or reformatted here -- it travels through as exactly
+        the string the operator typed, wire-shaped or not, and `reduction_event_valid()`
+        decides whether it is a parseable, timezone-aware timestamp. Converting a
+        Berlin-local clock reading into UTC would be a second coercion this lane has
+        chosen not to add: the form shows and edits the same UTC ISO string the wire
+        uses, so there is no local-time value to convert.
+
+    Every key outside `REDUCTION_EVENT_KEYS` is dropped, so a stray query parameter, a
+    submit button's own name, or anything else riding along with the submission can
+    never reach the POST body -- only these four keys, or fewer, ever come out of this
+    function.
+    """
+    event: dict[str, Any] = {}
+    if not isinstance(raw, Mapping):
+        return event
+    for key in REDUCTION_EVENT_KEYS:
+        if key not in raw:
+            continue
+        value = raw[key]
+        if value is None:
+            continue
+        if isinstance(value, str):
+            value = value.strip()
+            if value == "":
+                continue
+            if key != "call_t":
+                try:
+                    value = float(value)
+                except ValueError:
+                    pass  # kept as the operator's own string; reduction_event_valid() rejects it
+        event[key] = value
+    return event
+
+
+def reduction_event_valid(event: Any) -> bool:
+    """True only when `event` is a `ReductionEvent` the service's dispatch validator
+    will accept exactly as it stands.
+
+    `has_value()` (what `call.html` used before issue #40) is a presence check for
+    *display* branching -- issue #40 finding 2, "presence is not validity": it says
+    nothing about whether `call_t` parses, whether `notice_min` arrived as the string
+    `"15"` instead of the number `15`, or whether a negative `duration_min` would raise
+    inside `src.sched.dispatch`. Authorising a POST is a different question from
+    deciding whether to print a number, so it gets its own function rather than a fifth
+    branch on `has_value`, which stays exactly what it was for its other call sites.
+
+    Checks, mirroring `src/service`'s dispatch-route validator and `src.sched.dispatch`'s
+    own guards so the button is never enabled for a payload that is certain to 400:
+
+      - `event` carries exactly `REDUCTION_EVENT_KEYS` -- no more (an unrecognised field
+        is itself a 400 on the wire, "unknown ReductionEvent field(s)") and no fewer;
+      - `call_t` is a `str` that parses as a tz-aware timestamp -- naive is rejected,
+        matching `to_berlin`'s rule that the wire is always UTC;
+      - `notice_min`, `duration_min`, `reduction_kw` are real, finite numbers -- never a
+        `bool`, and never a numeric string ("60" is not accepted where 60 is required);
+      - `notice_min >= 0`, `duration_min > 0`, `reduction_kw >= 0` -- the exact bounds
+        `src.sched.dispatch` raises `ValueError` over.
+    """
+    if not isinstance(event, Mapping):
+        return False
+    if set(event.keys()) != REDUCTION_EVENT_KEYS:
+        return False
+    call_t = event.get("call_t")
+    if not isinstance(call_t, str) or _parse_utc_datetime(call_t) is None:
+        return False
+    notice_min = event.get("notice_min")
+    duration_min = event.get("duration_min")
+    reduction_kw = event.get("reduction_kw")
+    if not _is_finite_real(notice_min) or notice_min < 0:
+        return False
+    if not _is_finite_real(duration_min) or duration_min <= 0:
+        return False
+    if not _is_finite_real(reduction_kw) or reduction_kw < 0:
+        return False
+    return True
+
+
 _ENV: Environment | None = None
 
 
@@ -366,6 +622,7 @@ def jinja_env() -> Environment:
     env.globals["series_point_count"] = series_point_count
     env.globals["has_value"] = has_value
     env.globals["value_of"] = value_of
+    env.globals["reduction_event_valid"] = reduction_event_valid
     env.globals["MISSING_LABEL"] = MISSING_LABEL
     env.globals["PER_INTERVAL_FLOOR_KEYS"] = PER_INTERVAL_FLOOR_KEYS
     env.globals["PER_INTERVAL_FLOOR_CAVEAT"] = PER_INTERVAL_FLOOR_CAVEAT
@@ -390,6 +647,27 @@ def render(screen: str, context: Mapping[str, Any] | None = None) -> str:
         raise ValueError(f"unknown screen {screen!r}; must be one of {SCREENS}")
     ctx: dict[str, Any] = dict(context or {})
     ctx["screen"] = screen
+    if screen == "call":
+        reduction_event_input = ctx.get("reduction_event_input")
+        if reduction_event_input is not None:
+            # issue #40 follow-up: the operator submitted call.html's adjust-event
+            # form. Their submission is authoritative -- even a resubmission that
+            # cleared a field -- and replaces any prior `reduction_event` (default or
+            # service-supplied). It goes through the SAME `reduction_event_valid()`
+            # the template already calls to gate the computed default; this branch
+            # invents no second validation path.
+            ctx["reduction_event"] = build_reduction_event_from_input(reduction_event_input)
+        elif not has_value(ctx, "reduction_event"):
+            # issue #40 finding 1: nothing in production ever supplied
+            # `reduction_event`, so the dispatch button was permanently disabled.
+            # Build a default from the day's own timeseries when the caller passed
+            # one and did not already supply an event; an explicit `reduction_event`
+            # (even an invalid one -- see `reduction_event_valid`) is never
+            # overridden, so a real service bug stays visible instead of being
+            # silently papered over.
+            computed = default_reduction_event(ctx.get("intervals"))
+            if computed is not None:
+                ctx["reduction_event"] = computed
     template = jinja_env().get_template(_TEMPLATE_BY_SCREEN[screen])
     return template.render(**ctx)
 
