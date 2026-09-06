@@ -28,6 +28,7 @@ Three guarantees the routes below exist to keep, all from the contract:
 from __future__ import annotations
 
 import json
+import math
 import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -498,6 +499,20 @@ def _event_from_body(body: object) -> sched.ReductionEvent:
         value = body[key]
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise BadSpec(f"{key}={value!r} must be a number", f"pass {key} as a number")
+        if not math.isfinite(value):
+            # Python's json.loads accepts the non-standard literals NaN, Infinity and
+            # -Infinity, so these reach us from a real request body. They must be rejected
+            # HERE, before the range guards below: every comparison against NaN is False,
+            # so `reduction_kw < 0` *passes* for NaN and the value would sail through
+            # validation into sched.dispatch as an authorised reduction. That is the same
+            # shape as the NaN that once gave src/grid's thermal envelope maximum
+            # permission -- a guard that reads as satisfied because nothing it tests is
+            # true.
+            raise BadSpec(
+                f"{key}={value!r} is not a finite number",
+                f"pass {key} as a finite number; NaN and Infinity are not quantities a "
+                "dispatch can promise or a settlement can measure",
+            )
         numbers[key] = float(value)
     if numbers["duration_min"] <= 0:
         raise BadSpec(

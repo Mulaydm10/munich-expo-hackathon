@@ -13,6 +13,7 @@ The most important test in this module is the one where the two disagree.
 
 from __future__ import annotations
 
+import json
 import pandas as pd
 import pytest
 
@@ -241,3 +242,43 @@ def test_dispatching_a_scenario_with_no_feasible_schedule_is_an_error_not_a_zero
     )
     payload = assert_error_shape(response, status=500)
     assert payload["error"] == "scenario_failed"
+
+
+@pytest.mark.parametrize("literal", ["NaN", "Infinity", "-Infinity"])
+@pytest.mark.parametrize("field", ["notice_min", "duration_min", "reduction_kw"])
+def test_a_non_finite_number_is_rejected_rather_than_authorising_a_dispatch(
+    client, field, literal
+):
+    """NaN and Infinity must be refused by name, not by luck.
+
+    `json.loads` accepts these non-standard literals, so they arrive from a real request
+    body. Every comparison against NaN is False, so the range guards below the type check
+    (`reduction_kw < 0`, `duration_min <= 0`) all *pass* for NaN: the guard reads as
+    satisfied because nothing it tests is true, and the value is authorised. That is the
+    same failure that once let src/grid's thermal envelope take maximum permission.
+
+    Pinned at both ends: a finite value in the same field still dispatches (below), so
+    this cannot be satisfied by rejecting everything.
+    """
+    result = warm(client, FEASIBLE)
+    body = an_event(day_index()[70].isoformat())
+    raw = json.dumps(body).replace(f'"{field}": {json.dumps(body[field])}',
+                                   f'"{field}": {literal}')
+    assert literal in raw, "the literal never reached the payload -- test is vacuous"
+
+    response = client.post(
+        f"/api/scenario/{result['id']}/dispatch",
+        content=raw,
+        headers={"content-type": "application/json"},
+    )
+    assert_error_shape(response, status=400)
+    assert field in response.json()["detail"]
+
+
+def test_a_finite_value_in_the_same_field_still_dispatches(client):
+    """The other end of the coercion: the non-finite guard must not reject real numbers."""
+    result = warm(client, FEASIBLE)
+    response = client.post(
+        f"/api/scenario/{result['id']}/dispatch", json=an_event(day_index()[70].isoformat())
+    )
+    assert response.status_code == 200
