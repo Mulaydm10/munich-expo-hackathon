@@ -333,19 +333,55 @@ def test_carbon_columns_dtype_and_no_duplicates(tmp_path: Path) -> None:
 def test_carbon_intensity_matches_hand_computed_weighted_average(tmp_path: Path) -> None:
     """Ground truth computed independently from
     generation_mix_synthetic_2026-06-15_baseline.csv's first row (12:00-13:00
-    local): Braunkohle=20, Steinkohle=10, Erdgas=15, Kernenergie=0, Wind=30,
-    Photovoltaik=40 MWh; factors 1080/820/490/12/11/45 g/kWh.
-    weighted = 20*1080 + 10*820 + 15*490 + 0*12 + 30*11 + 40*45 = 39280
-    total_gen = 20+10+15+0+30+40 = 115
-    intensity = 39280 / 115 = 341.565217...
+    local): Braunkohle=20, Steinkohle=10, Erdgas=15, Kernenergie=0,
+    Wind Onshore=25, Wind Offshore=5, Photovoltaik=40, Biomasse=10,
+    Wasserkraft=5 MWh (all with a known factor), plus Pumpspeicher=2 MWh
+    (no known factor -- excluded from both numerator and denominator, issue
+    #50 finding 1). Factors g/kWh: 1080/820/490/12/11/12/45/230/24.
+    weighted = 20*1080 + 10*820 + 15*490 + 0*12 + 25*11 + 5*12 + 40*45
+               + 10*230 + 5*24 = 41705
+    total_known_gen = 20+10+15+0+25+5+40+10+5 = 130
+    intensity = 41705 / 130 = 320.807692...
     """
     df = _carbon(tmp_path)
     # 12:00-13:00 CEST local -> 10:00-11:00 UTC, forward-filled into 4 rows.
     hour = df[(df["t"] >= pd.Timestamp("2026-06-15T10:00:00Z")) & (df["t"] < pd.Timestamp("2026-06-15T11:00:00Z"))]
     assert len(hour) == 4  # forward-filled across the quarter-hours
-    expected = (20 * 1080 + 10 * 820 + 15 * 490 + 0 * 12 + 30 * 11 + 40 * 45) / (20 + 10 + 15 + 0 + 30 + 40)
+    known = {
+        "Braunkohle": (20, 1080.0),
+        "Steinkohle": (10, 820.0),
+        "Erdgas": (15, 490.0),
+        "Kernenergie": (0, 12.0),
+        "Wind Onshore": (25, 11.0),
+        "Wind Offshore": (5, 12.0),
+        "Photovoltaik": (40, 45.0),
+        "Biomasse": (10, 230.0),
+        "Wasserkraft": (5, 24.0),
+    }
+    weighted = sum(mwh * factor for mwh, factor in known.values())
+    total_known = sum(mwh for mwh, _ in known.values())
+    expected = weighted / total_known
     assert hour["intensity_g_kwh"].iloc[0] == pytest.approx(expected)
     assert hour["intensity_g_kwh"].nunique() == 1  # forward-fill: identical across all 4 quarters
+
+    # The pre-#50 six-fuel-only computation (lignite/hard coal/gas/nuclear/
+    # wind/solar, wind un-split at factor 11) excludes Biomasse/Wasserkraft
+    # from BOTH numerator and denominator, which reads more fossil-heavy and
+    # so must give a strictly higher (biased-high) number than the fixed
+    # nine-category computation above -- pinning the direction of the bias,
+    # not just that a change occurred.
+    six_fuel_known = {
+        "Braunkohle": (20, 1080.0),
+        "Steinkohle": (10, 820.0),
+        "Erdgas": (15, 490.0),
+        "Kernenergie": (0, 12.0),
+        "Wind": (25 + 5, 11.0),  # Onshore + Offshore combined, old un-split factor
+        "Photovoltaik": (40, 45.0),
+    }
+    six_fuel_expected = sum(mwh * factor for mwh, factor in six_fuel_known.values()) / sum(
+        mwh for mwh, _ in six_fuel_known.values()
+    )
+    assert expected < six_fuel_expected
 
 
 def test_carbon_dst_autumn_double_hour_round_trips(tmp_path: Path) -> None:
@@ -373,4 +409,89 @@ def test_carbon_meta_records_emission_factors_and_forward_fill(tmp_path: Path) -
     m = api.meta("carbon", root=root)
     assert m["resample_method"] == "forward_fill_from_60min"
     assert m["emission_factors_g_kwh"]["Braunkohle"] == pytest.approx(1080.0)
+    assert m["emission_factors_g_kwh"]["Biomasse"] == pytest.approx(230.0)
+    assert m["emission_factors_g_kwh"]["Wasserkraft"] == pytest.approx(24.0)
+    assert m["emission_factors_g_kwh"]["Wind Onshore"] == pytest.approx(11.0)
+    assert m["emission_factors_g_kwh"]["Wind Offshore"] == pytest.approx(12.0)
+    assert "Wind" not in m["emission_factors_g_kwh"]  # split, not the old single key
     assert m["source_url"] == api.SOURCES["generation_mix"].url
+
+    # Issue #50 finding 1: Pumpspeicher (baseline fixture rows 1-3) has no
+    # known emission factor and must not be silently dropped from the
+    # denominator -- it is excluded from the weighted average, but that
+    # exclusion is recorded here, visibly, not just skipped. Only categories
+    # actually present are listed (Sonstige Erneuerbare/Konventionelle don't
+    # appear in these fixtures, so they are correctly absent, not padded in).
+    assert m["excluded_generation_categories"] == ["Pumpspeicher"]
+    # 3 of the 8 hourly rows carry Pumpspeicher > 0; each forward-fills to
+    # 4 quarter-hour rows in the canonical (15-min) table -> 12.
+    assert m["n_rows_with_excluded_generation_category"] == 12
+    assert m["excluded_generation_mwh_share_mean"] == pytest.approx(0.003856202383350869)
+    assert m["excluded_generation_mwh_share_mean"] > 0  # must actually move, not sit pinned at zero
+
+
+def test_carbon_excluded_category_generation_emits_a_warning(tmp_path: Path) -> None:
+    """A raw file carrying Pumpspeicher (or another no-known-factor category)
+    with nonzero generation must warn -- CONVENTIONS.md: a coercion (here, an
+    exclusion) is never a silent omission."""
+    root = _root(tmp_path)
+    _seed(root, "generation_mix", "generation_mix_synthetic_2026-06-15_baseline.csv")
+    with pytest.warns(UserWarning, match="no known emission factor"):
+        api.canonicalise("generation_mix", root=root)
+
+
+def test_carbon_intensity_changes_when_biomass_and_hydro_are_included(tmp_path: Path) -> None:
+    """Issue #50 finding 1, pinned directly: a fixture that adds a
+    generation category outside the original six (Biomasse, Wasserkraft)
+    must change the computed intensity relative to what the pre-#50 code
+    would have produced for this exact row. That code silently summed only
+    its six hard-coded `_GENERATION_MIX_FUELS` keys (Braunkohle/Steinkohle/
+    Erdgas/Kernenergie/Wind/Photovoltaik) and ignored Biomasse/Wasserkraft
+    entirely -- both in the numerator and the denominator -- so its answer
+    for this exact row equals `six_fuel_only` below, computed by hand
+    independently of src.data.api.
+
+    Uses an inline fixture that keeps the OLD single "Wind" column name (no
+    Onshore/Offshore split): under the FIXED code this column is no longer a
+    recognised key (real SMARD splits wind), so it is excluded -- visibly,
+    with a warning -- exactly like Pumpspeicher is elsewhere in this file.
+    That exclusion is a separate, correct behaviour (see
+    test_carbon_excluded_category_generation_emits_a_warning); this test
+    isolates the Biomasse/Wasserkraft omission bug by checking the fixed
+    code's answer against the *known-categories-only* figure it should
+    produce here (Braunkohle/Steinkohle/Erdgas/Kernenergie/Photovoltaik/
+    Biomasse/Wasserkraft -- Wind is not a recognised key in the fixed code
+    either, so it is excluded on both sides of this comparison).
+    """
+    root = _root(tmp_path, "inline")
+    raw_dir = root / "raw" / "generation_mix"
+    raw_dir.mkdir(parents=True)
+    (raw_dir / "one_row.csv").write_text(
+        "Datum von;Datum bis;Braunkohle [MWh];Steinkohle [MWh];Erdgas [MWh];"
+        "Kernenergie [MWh];Wind [MWh];Photovoltaik [MWh];Biomasse [MWh];Wasserkraft [MWh]\n"
+        "01.06.2026 12:00;01.06.2026 13:00;20,00;10,00;15,00;0,00;30,00;40,00;10,00;5,00\n",
+        encoding="utf-8",
+    )
+    with pytest.warns(UserWarning, match="no known emission factor"):
+        api.canonicalise("generation_mix", root=root)
+    df = api.load("carbon", root=root)
+    hour = df[(df["t"] >= pd.Timestamp("2026-06-01T10:00:00Z")) & (df["t"] < pd.Timestamp("2026-06-01T11:00:00Z"))]
+    actual = hour["intensity_g_kwh"].iloc[0]
+
+    # What the pre-#50 code (six hard-coded fuels, Wind included at 11 g/kWh,
+    # Biomasse/Wasserkraft never even looked at) would compute for this row.
+    six_fuel_only = (20 * 1080 + 10 * 820 + 15 * 490 + 0 * 12 + 30 * 11 + 40 * 45) / (20 + 10 + 15 + 0 + 30 + 40)
+    # What the fixed code actually computes: known categories only
+    # (Braunkohle/Steinkohle/Erdgas/Kernenergie/Photovoltaik/Biomasse/
+    # Wasserkraft), Wind excluded because it is not a recognised key.
+    known_only = (20 * 1080 + 10 * 820 + 15 * 490 + 0 * 12 + 40 * 45 + 10 * 230 + 5 * 24) / (
+        20 + 10 + 15 + 0 + 40 + 10 + 5
+    )
+
+    # On the pre-#50 code, `actual` would equal `six_fuel_only` -- this is
+    # the assertion that goes red on that code (not an import/KeyError, a
+    # real value mismatch): old code silently ignores Biomasse/Wasserkraft
+    # rather than including them, so its number lands on six_fuel_only, not
+    # known_only.
+    assert actual != pytest.approx(six_fuel_only)
+    assert actual == pytest.approx(known_only)
