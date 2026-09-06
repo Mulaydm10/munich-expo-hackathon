@@ -7,6 +7,7 @@ criterion with a test attached. These are that test.
 
 from __future__ import annotations
 
+import datetime as dt
 import re
 
 import pytest
@@ -140,3 +141,52 @@ def test_a_non_numeric_figure_is_not_printed_as_if_it_were_a_number() -> None:
     assert api.fmt_number("n/a") == api.MISSING_LABEL
     assert api.fmt_number(None) == api.MISSING_LABEL
     assert api.fmt_rate(None) == api.MISSING_LABEL
+
+
+# --- #37 item 4: a naive timestamp is unknown, not UTC ---------------------------
+
+def test_a_parseable_but_naive_timestamp_is_unknown_not_assumed_to_be_utc() -> None:
+    """`to_berlin` used to stamp UTC onto a tz-naive value and convert it, returning a
+    confident Berlin wall-clock time for a timestamp whose zone nobody knew. Its own
+    docstring promised None. contracts/CONVENTIONS.md makes the wire tz-aware UTC, so a
+    naive value is a service bug, not a UTC value with the offset left off -- and the
+    fabricated clock is wrong by one or two hours exactly when it looks most plausible.
+
+    "2026-10-25T02:30:00" is deliberately the DST-fallback date CONVENTIONS.md names:
+    the assumed-UTC reading invents 03:30, and 02:30 Berlin local occurred twice that
+    day, so there is no honest way to guess which instant was meant.
+    """
+    assert api.to_berlin("2026-10-25T02:30:00") is None
+    assert api.berlin_label("2026-10-25T02:30:00") == "unknown time"
+    assert api.berlin_clock("2026-10-25T02:30:00") == "unknown time"
+
+
+def test_a_naive_datetime_object_is_unknown_too() -> None:
+    """The same value can arrive already parsed, and used to take the same bad branch."""
+    assert api.to_berlin(dt.datetime(2026, 10, 25, 2, 30)) is None
+    assert api.berlin_label(dt.datetime(2026, 6, 15, 10, 0)) == "unknown time"
+
+
+def test_the_same_instant_with_its_offset_still_converts() -> None:
+    """The other end of the pair: rejecting naive input must not have broken the aware
+    path. Expectations are derived from the rule, not from the code: Germany is UTC+2
+    (CEST) in June, and on 2026-10-25 the clocks go back at 03:00 CEST = 01:00 UTC, so
+    02:30 UTC that day is already CET, UTC+1.
+    """
+    assert api.berlin_label("2026-06-15T10:00:00+00:00") == "2026-06-15 12:00"
+    assert api.berlin_label("2026-10-25T02:30:00+00:00") == "2026-10-25 03:30"
+    assert api.berlin_clock("2026-10-25T02:30:00+00:00") == "03:30 +0100"
+    assert api.berlin_clock("2026-10-25T00:30:00+00:00") == "02:30 +0200"
+
+
+def test_a_screen_renders_a_naive_timestamp_as_unknown_rather_than_a_clock(intervals: list[dict]) -> None:
+    """Through a template, not just the helper: the day screen's span line and its play
+    clock must both say so rather than print an invented Berlin time."""
+    naive = [{**row, "t": str(row["t"]).replace("+00:00", "")} for row in intervals]
+    html = api.render("day", {"intervals": naive})
+    lede = re.search(r'data-testid="interval-count">(.*?)</p>', html, re.S)
+    assert lede is not None
+    assert "unknown time" in lede.group(1)
+    assert "2026-10-25 00:00" not in html
+    clock = re.search(r'data-testid="play-clock">(.*?)</output>', html, re.S)
+    assert clock is not None and "unknown time" in clock.group(1)

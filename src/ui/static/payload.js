@@ -66,3 +66,21 @@ export function berlinClock(iso) {
     timeZoneName: "shortOffset",
   }).format(d);
 }
+
+// Contiguous runs of finite values for `key`, as arrays of {i, v} in row order. A gap
+// is a BREAK between runs, never a bridge across one: every renderer in this directory
+// draws one path per run, so a missing interval reads as missing. A filled band is the
+// case that made this shared: a single polygon over all rows shades straight across a
+// gap, painting envelope or sold-floor capacity the API never sent, and a shaded area
+// is read as "this much was available". Zero and unknown must never look the same.
+export function runs(rows, key) {
+  const out = [];
+  let cur = null;
+  rows.forEach((r, i) => {
+    const v = r ? r[key] : undefined;
+    if (typeof v !== "number" || !Number.isFinite(v)) { cur = null; return; }
+    if (!cur) { cur = []; out.push(cur); }
+    cur.push({ i, v });
+  });
+  return out;
+}

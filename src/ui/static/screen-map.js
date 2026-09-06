@@ -21,6 +21,18 @@ const BINS = [
   { max: Infinity, r: 7.0, fill: "#ffffff", ring: true },
 ];
 
+// Not a bucket. A site whose firm_kw the API did not send has no capacity to bucket, so
+// it gets a mark of its own: hollow, crossed, and never filled. Mirrors MAP_UNKNOWN_MARK
+// in src/ui/api.py, which is the legend row that names it.
+const UNKNOWN_MARK = { r: 5.0, stroke: "#b3261e", width: 2.5 };
+const UNKNOWN_TEXT = "capacity not provided by API";
+
+// The site's own firm_kw, or null. NOT 0. Coercing a missing capacity to zero put an
+// unknown site in the smallest-capacity bucket — a filled low dot — so "this site can
+// promise almost nothing" and "we do not know what this site can promise" were the same
+// mark on the demo's first screen. They are opposite facts to an operator.
+const firmKw = (s) => (typeof s.firm_kw === "number" && Number.isFinite(s.firm_kw) ? s.firm_kw : null);
+
 const VIEWS = {
   country: { lat: [47.2, 55.1], lon: [5.8, 15.1], label: "Germany" },
   munich: { lat: [47.95, 48.35], lon: [11.3, 11.9], label: "Munich" },
@@ -48,10 +60,29 @@ if (canvas && !Array.isArray(sites)) {
 
   const binFor = (kw) => BINS.find((b) => kw < b.max) || BINS[BINS.length - 1];
 
+  function drawUnknown(x, y) {
+    // Hollow ring, no fill, plus a cross — two non-colour cues, because
+    // contracts/src/ui.md forbids relying on colour alone and this is the one mark a
+    // judge must not confuse with a small dot.
+    ctx.save();
+    ctx.lineWidth = UNKNOWN_MARK.width;
+    ctx.strokeStyle = UNKNOWN_MARK.stroke;
+    ctx.beginPath();
+    ctx.arc(x, y, UNKNOWN_MARK.r, 0, Math.PI * 2);
+    ctx.stroke();
+    const d = UNKNOWN_MARK.r * 0.55;
+    ctx.beginPath();
+    ctx.moveTo(x - d, y - d); ctx.lineTo(x + d, y + d);
+    ctx.moveTo(x + d, y - d); ctx.lineTo(x - d, y + d);
+    ctx.stroke();
+    ctx.restore();
+  }
+
   function drawPoints(visible, toXY) {
     for (const s of visible) {
       const { x, y } = toXY(s);
-      const kw = typeof s.firm_kw === "number" ? s.firm_kw : 0;
+      const kw = firmKw(s);
+      if (kw === null) { drawUnknown(x, y); continue; }
       const bin = binFor(kw);
       ctx.beginPath();
       ctx.arc(x, y, bin.r, 0, Math.PI * 2);
@@ -60,13 +91,6 @@ if (canvas && !Array.isArray(sites)) {
       if (bin.ring) {
         ctx.lineWidth = 2.5;
         ctx.strokeStyle = "#10161c";
-        ctx.stroke();
-      }
-      // A site with no firm_kw is drawn hollow, never as a smallest-bucket dot: an
-      // unknown capacity must not look like a low one.
-      if (typeof s.firm_kw !== "number") {
-        ctx.lineWidth = 2;
-        ctx.strokeStyle = "#b3261e";
         ctx.stroke();
       }
     }
@@ -101,6 +125,47 @@ if (canvas && !Array.isArray(sites)) {
     }
   }
 
+  // What the last draw() put on screen, so the hover read-out can hit-test against
+  // exactly the marks a viewer can see rather than against the whole payload.
+  let lastVisible = [];
+  let lastToXY = null;
+  let lastBinned = false;
+  let hovered = null;
+
+  // The legend promises that hovering a site shows its own firm_kw. Before this handler
+  // there was no hit-testing at all, so the page promised a figure it could not show.
+  // Nothing here is computed: the hovered site's own value is printed verbatim, and a
+  // site whose capacity the API omitted says so instead of reading 0.
+  function renderReadout() {
+    if (!readout) return;
+    if (hovered) {
+      const kw = firmKw(hovered);
+      readout.textContent =
+        `${hovered.site_id ?? "site"}: ` +
+        (kw === null ? UNKNOWN_TEXT : `${kw.toLocaleString()} kW firm capacity`);
+      return;
+    }
+    const unknown = lastVisible.filter((s) => firmKw(s) === null).length;
+    readout.textContent =
+      `${lastVisible.length} sites in view` +
+      (lastBinned ? " (binned: cell label = site count; hover a single site at closer zoom)" : "") +
+      // Stated in words, not left to the mark alone: how many of the dots in view are an
+      // absence of data rather than a low number.
+      (unknown ? ` — ${unknown} with ${UNKNOWN_TEXT}` : "");
+  }
+
+  function siteAt(px, py) {
+    if (lastBinned || !lastToXY) return null;
+    let best = null;
+    let bestD2 = 14 * 14;   // px, generous enough for the 2 px smallest mark
+    for (const s of lastVisible) {
+      const { x, y } = lastToXY(s);
+      const d2 = (x - px) * (x - px) + (y - py) * (y - py);
+      if (d2 <= bestD2) { bestD2 = d2; best = s; }
+    }
+    return best;
+  }
+
   function draw() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     const [lat0, lat1] = view.lat;
@@ -115,10 +180,11 @@ if (canvas && !Array.isArray(sites)) {
     const binned = visible.length > 2000;
     if (binned) drawBinned(visible, toXY);
     else drawPoints(visible, toXY);
-    if (readout) {
-      readout.textContent =
-        `${visible.length} sites in view` + (binned ? " (binned: cell label = site count)" : "");
-    }
+    lastVisible = visible;
+    lastToXY = toXY;
+    lastBinned = binned;
+    if (hovered && !visible.includes(hovered)) hovered = null;
+    renderReadout();
   }
 
   function setView(next) {
@@ -142,8 +208,13 @@ if (canvas && !Array.isArray(sites)) {
   let dragging = null;
   canvas.addEventListener("pointerdown", (ev) => { dragging = { x: ev.offsetX, y: ev.offsetY }; });
   window.addEventListener("pointerup", () => { dragging = null; });
+  canvas.addEventListener("pointerleave", () => { hovered = null; renderReadout(); });
   canvas.addEventListener("pointermove", (ev) => {
-    if (!dragging) return;
+    if (!dragging) {
+      const hit = siteAt(ev.offsetX, ev.offsetY);
+      if (hit !== hovered) { hovered = hit; renderReadout(); }
+      return;
+    }
     const dLon = ((ev.offsetX - dragging.x) / canvas.width) * (view.lon[1] - view.lon[0]);
     const dLat = ((ev.offsetY - dragging.y) / canvas.height) * (view.lat[1] - view.lat[0]);
     setView({ lat: [view.lat[0] + dLat, view.lat[1] + dLat], lon: [view.lon[0] - dLon, view.lon[1] - dLon] });

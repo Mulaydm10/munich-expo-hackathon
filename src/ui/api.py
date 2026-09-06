@@ -42,6 +42,15 @@ and then, per screen:
   day      `intervals`  : [{t, baseline_load_kw, optimised_load_kw, envelope_kw,
                             price_eur_mwh, firm_kw}]  (`/api/scenario/{id}/timeseries`)
   call     `dispatch`   : the `/api/scenario/{id}/dispatch` response
+           `dispatch_url`   : the POST target for the dispatch button
+           `reduction_event`: the `ReductionEvent` the button must POST --
+                          {call_t, notice_min, duration_min, reduction_kw}, the field
+                          names `src/sched/api.py::ReductionEvent` declares. This lane
+                          does NOT invent it: `contracts/src/ui.md` forbids computing
+                          anything, and choosing a reduction size or a notice period in
+                          JavaScript would be exactly that. When the service does not
+                          send one the button is disabled and says why, because an
+                          empty POST body is a request the service must reject.
   pooling  `curve`      : [{n_sites, firm_kw_per_site, shortfall_rate}]
                           (`/api/scenario/{id}/pooling`, i.e. `diversification_curve` rows)
   ledger   `totals`     : `ScenarioResult.totals`
@@ -60,6 +69,7 @@ fixing it is a one-line rename, and a silent zero would not be.
 from __future__ import annotations
 
 import datetime as _dt
+import math as _math
 import re
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -143,6 +153,15 @@ MAP_LEGEND_BINS: tuple[tuple[float, float | None, str], ...] = (
     (200.0, 500.0, "large circle"),
     (500.0, None, "large ring"),
 )
+
+# The fifth mark on the map, and the one the buckets above cannot express: a site whose
+# `firm_kw` the API did not send. It is NOT a bucket -- it has no range -- and it must
+# never be drawn as the 0-50 kW mark, because "this site can promise almost nothing" and
+# "we do not know what this site can promise" are opposite facts to an operator.
+# `screen-map.js` draws exactly this mark (its UNKNOWN_TEXT is MAP_UNKNOWN_LABEL verbatim,
+# asserted in tests/src/ui/test_static_modules.py); this is the legend row that names it.
+MAP_UNKNOWN_MARK = "hollow ring with a cross, no fill"
+MAP_UNKNOWN_LABEL = "capacity not provided by API"
 
 
 # Fields named in contracts/src/service.md whose unit is NOT recoverable from a
@@ -239,7 +258,16 @@ def value_of(obj: Any, key: str) -> Any:
 def to_berlin(value: Any) -> _dt.datetime | None:
     """Parse a tz-aware UTC wire timestamp (ISO string or datetime) and convert it to
     Europe/Berlin for display. Returns None (never a fabricated time) if `value` is
-    falsy or unparseable -- a template must render "unknown", not a wrong clock.
+    falsy, unparseable, or **naive** -- a template must render "unknown", not a wrong
+    clock.
+
+    The naive case is the one that used to lie: `contracts/CONVENTIONS.md` says the wire
+    is `datetime64[ns, UTC]`, so a timestamp that arrives without an offset is a service
+    bug, not a UTC timestamp with the offset omitted. Stamping UTC on it and converting
+    produced a confident Berlin wall-clock time that is one or two hours wrong whenever
+    the sender meant local time -- and on `2026-10-25` the hour it invents is the
+    ambiguous one. An unknown time shown as "unknown time" costs a demo a label; an
+    invented one costs the audience their trust in every other number on the page.
     """
     if value is None or value == "":
         return None
@@ -250,9 +278,33 @@ def to_berlin(value: Any) -> _dt.datetime | None:
             dt = _dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
         except ValueError:
             return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=_dt.timezone.utc)
+    if dt.tzinfo is None or dt.tzinfo.utcoffset(dt) is None:
+        return None
     return dt.astimezone(BERLIN_TZ)
+
+
+def series_point_count(rows: Any, key: str) -> int:
+    """How many rows carry a finite number at `key` -- i.e. how many points the canvas
+    modules will actually plot for that series.
+
+    The templates ask this instead of inspecting `rows[0]`. A series absent from the
+    first interval but present later IS drawn by the module (every module tests each
+    point with `typeof v === "number" && Number.isFinite(v)`), so a legend that read
+    only the first row could print "series not drawn" beside a plotted series. Bools
+    and non-finite floats are not points, matching that per-point test exactly.
+    """
+    if not isinstance(rows, (list, tuple)):
+        return 0
+    n = 0
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        v = row.get(key)
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            continue
+        if _math.isfinite(v):
+            n += 1
+    return n
 
 
 def berlin_label(value: Any, fmt: str = "%Y-%m-%d %H:%M") -> str:
@@ -309,6 +361,9 @@ def jinja_env() -> Environment:
     env.globals["SCREEN_TITLES"] = SCREEN_TITLES
     env.globals["STATIC"] = STATIC_URL_PREFIX
     env.globals["MAP_LEGEND_BINS"] = MAP_LEGEND_BINS
+    env.globals["MAP_UNKNOWN_MARK"] = MAP_UNKNOWN_MARK
+    env.globals["MAP_UNKNOWN_LABEL"] = MAP_UNKNOWN_LABEL
+    env.globals["series_point_count"] = series_point_count
     env.globals["has_value"] = has_value
     env.globals["value_of"] = value_of
     env.globals["MISSING_LABEL"] = MISSING_LABEL

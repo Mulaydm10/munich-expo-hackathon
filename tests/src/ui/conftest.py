@@ -42,6 +42,17 @@ def amended() -> list[dict]:
 
 
 @pytest.fixture
+def reduction_event() -> dict:
+    """The `ReductionEvent` the service tells the call screen to POST.
+
+    Field names are `src/sched/api.py::ReductionEvent`'s: call_t, notice_min,
+    duration_min, reduction_kw. Values line up with `dispatch.json`'s event window
+    (16:00-20:00Z is 240 min) so the two fixtures describe one story.
+    """
+    return load("reduction_event")
+
+
+@pytest.fixture
 def curve() -> list[dict]:
     return load("pooling")
 
@@ -75,6 +86,7 @@ def contexts() -> dict[str, dict]:
             "dispatch": load("dispatch"),
             "amended_intervals": load("amended"),
             "dispatch_url": "/api/scenario/abc/dispatch",
+            "reduction_event": load("reduction_event"),
         },
         "pooling": {"curve": load("pooling"), "pool_method": "empirical"},
         "ledger": dict(ledger_payload),

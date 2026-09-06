@@ -68,3 +68,53 @@ def test_warnings_are_escaped_not_executed() -> None:
     html = api.render("map", {**CONTEXTS["map"], "warnings": ["<script>alert(1)</script>"]})
     assert "<script>alert(1)</script>" not in html
     assert "&lt;script&gt;" in html
+
+
+# --- #37 item 2: an error must not swallow the warnings --------------------------
+#
+# The defect this section pins: `_base.html` wrapped the warnings block in
+# `{% if not error %}`, so a response carrying BOTH an error and warnings[] rendered the
+# error and dropped every warning. That is the exact shape contracts/src/service.md
+# calls forbidden -- the pipeline degraded, then failed, and the page reported only the
+# failure. The charts are what an error suppresses; the evidence never is.
+
+@pytest.mark.parametrize("screen", api.SCREENS)
+def test_an_error_does_not_swallow_the_warnings_that_came_with_it(
+    screen: str, warnings: list, error: dict
+) -> None:
+    html = api.render(screen, {**CONTEXTS[screen], "warnings": warnings, "error": error})
+    assert 'data-testid="error-banner"' in html, "the error itself must still show"
+    section = re.search(r'data-testid="warnings"(.*?)</section>', html, re.S)
+    assert section is not None, f"{screen} swallowed warnings[] on the error branch"
+    assert html.count('data-testid="warning-item"') == len(warnings)
+    for w in warnings:
+        message = w["message"] if isinstance(w, dict) else w
+        assert message in section.group(1), (screen, message)
+
+
+@pytest.mark.parametrize("screen", api.SCREENS)
+def test_an_error_still_suppresses_the_charts_it_always_did(screen: str, warnings: list, error: dict) -> None:
+    """The other end of the same rule: rendering warnings under an error must not have
+    smuggled the chart body back in. An error banner beside a chart reading 0 kW is the
+    failure the suppression exists for."""
+    html = api.render(screen, {**CONTEXTS[screen], "warnings": warnings, "error": error})
+    assert "<canvas" not in html
+    assert 'class="figure-value"' not in html
+
+
+def test_an_error_with_no_warnings_says_unknown_rather_than_none_reported(error: dict) -> None:
+    """"The pipeline reported no warnings" is a claim about a response that never
+    arrived. Under an error the honest word is unknown -- the zero-vs-unknown rule
+    applied to the warning list itself."""
+    html = api.render("ledger", {**CONTEXTS["ledger"], "warnings": [], "error": error})
+    assert 'data-testid="warnings-unknown"' in html
+    assert "none reported for this scenario" not in html
+
+
+def test_no_error_and_no_warnings_still_says_none_reported() -> None:
+    """The other end: without an error, an empty list IS a clean run and must read as
+    one. The two empty states must not collapse into a single sentence."""
+    html = api.render("ledger", {**CONTEXTS["ledger"], "warnings": []})
+    assert 'data-testid="warnings-empty"' in html
+    assert 'data-testid="warnings-unknown"' not in html
+    assert "none reported for this scenario" in html
