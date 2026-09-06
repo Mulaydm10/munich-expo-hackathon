@@ -7,10 +7,20 @@ This module is the lane's ONLY cross-lane surface: other lanes import
 interface this lane owes the rest of the project, and
 `contracts/CONVENTIONS.md` for units, time handling and the data layout.
 
-Only the `charge_points` source (Bundesnetzagentur Ladesaeulenregister) is
-wired end to end, producing the `sites` canonical table. Every other source
-named in the contract raises NotImplementedError from `fetch`/`canonicalise`
-until a later issue wires it.
+Wired end to end (issue #8 and earlier): `charge_points` (-> `sites`),
+`smard_load` (-> `grid_load`), `epex_day_ahead` (-> `prices`), `dwd_weather`
+(-> `weather`), `generation_mix` (-> `carbon`, derived from SMARD's public
+generation-by-fuel-type export plus published emission factors, so it needs
+no ENTSO-E API key). `balancing` (regelleistung.net) is deferred: see the
+NotImplementedError raised for it below and issue #8's report for why.
+
+No raw data is real for any of these sources in this checkout (`data/raw/`
+ships empty): `canonicalise()`/`load()` are exercised in tests only against
+small, hand-authored, clearly-marked-synthetic fixtures under
+`tests/src/data/fixtures/`. `fetch()` is real (and untested) for
+`charge_points` only; the rest raise NotImplementedError explaining that a
+real download needs date-partitioned/per-station logic this issue does not
+build.
 """
 
 from __future__ import annotations
@@ -18,15 +28,23 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import math
 import os
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Sequence
+from zoneinfo import ZoneInfo
 
+import numpy as np
 import pandas as pd
 
 LANE = "src/data"
+
+# Europe/Berlin, used to localise the German-market sources (SMARD) whose raw
+# timestamps are local wall-clock, not UTC. DWD's raw timestamps are already
+# UTC (see `_parse_dwd_weather_raw`), so this constant is not used there.
+_BERLIN = ZoneInfo("Europe/Berlin")
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -62,7 +80,58 @@ SOURCES: dict[str, Source] = {
         resolution_min=None,
         canonical_table="sites",
     ),
+    # SMARD (Bundesnetzagentur) publishes realised load + generation and
+    # day-ahead prices as CSV/JSON exports from its download center; the
+    # human-facing entry point is confirmed public and stable, recorded here
+    # for provenance. The exact deep API filter/module ids for automated
+    # per-date-range fetch are NOT verified against a live request (no
+    # network in this environment) -- see `_FETCH_WIRED` below: fetch() for
+    # these sources raises NotImplementedError rather than guess at them.
+    "smard_load": Source(
+        name="smard_load",
+        url="https://www.smard.de/home/downloadcenter/download-marktdaten",
+        license="Nutzung frei mit Quellenangabe, Bundesnetzagentur | SMARD.de",
+        resolution_min=15,
+        canonical_table="grid_load",
+    ),
+    "epex_day_ahead": Source(
+        name="epex_day_ahead",
+        url="https://www.smard.de/home/downloadcenter/download-marktdaten",
+        license="Nutzung frei mit Quellenangabe, Bundesnetzagentur | SMARD.de",
+        resolution_min=60,
+        canonical_table="prices",
+    ),
+    # DWD Open Data: public, no key, well-known stable directory root.
+    "dwd_weather": Source(
+        name="dwd_weather",
+        url="https://opendata.dwd.de/climate_environment/CDC/observations_germany/climate/hourly/",
+        license="Creative Commons Namensnennung 4.0 International (CC BY 4.0), Deutscher Wetterdienst",
+        resolution_min=60,
+        canonical_table="weather",
+    ),
+    # `carbon` is deliberately NOT sourced from ENTSO-E: the Transparency
+    # Platform's REST API needs a free security token, which is an
+    # `agent:devin` issue, not something to commit or work around. Instead we
+    # derive intensity from SMARD's public generation-by-fuel-type export
+    # (same download center, no key) combined with published emission
+    # factors -- see CARBON_INTENSITY_FACTORS_G_KWH below.
+    "generation_mix": Source(
+        name="generation_mix",
+        url="https://www.smard.de/home/downloadcenter/download-marktdaten",
+        license="Nutzung frei mit Quellenangabe, Bundesnetzagentur | SMARD.de",
+        resolution_min=60,
+        canonical_table="carbon",
+    ),
 }
+
+# fetch()'s single-file "download SOURCES[source].url straight to one file"
+# shape only fits `charge_points` (one whole-registry snapshot). The other
+# wired sources are date-partitioned (SMARD) or per-station (DWD) and need
+# real partitioning logic to fetch correctly; building and testing that
+# against a live endpoint is out of scope for this issue (no network here).
+# canonicalise()/load() are fully wired for all of them against raw files
+# placed under data/raw/<source>/ by hand, a fixture, or a future fetch().
+_FETCH_WIRED = {"charge_points"}
 
 # Human-readable "how to build this" pointer used only to compose MissingTable
 # messages. Naming a source here does not mean it is wired: fetch()/
@@ -74,7 +143,7 @@ _TABLE_SOURCE: dict[str, str] = {
     "prices": "epex_day_ahead",
     "weather": "dwd_weather",
     "balancing": "regelleistung",
-    "carbon": "entsoe_carbon",
+    "carbon": "generation_mix",
 }
 
 
@@ -120,6 +189,15 @@ def fetch(source: str, *, start: date, end: date, root: Path = DATA_ROOT) -> lis
             f"source {source!r} is not wired yet; only {sorted(SOURCES)} "
             "are implemented (see contracts/src/data.md)"
         )
+    if source not in _FETCH_WIRED:
+        raise NotImplementedError(
+            f"fetch({source!r}, ...) is not wired: {source!r} is "
+            "date-partitioned and/or split per station, and needs real "
+            "partition-by-{start,end} (or per-station) download logic that "
+            "this issue does not build/verify against a live endpoint. "
+            "canonicalise()/load() work fully once raw files exist under "
+            f"data/raw/{source}/ (by hand, or from a future fetch())."
+        )
     import requests  # imported lazily: fetch() is exercised by hand, never by pytest
 
     src = SOURCES[source]
@@ -164,6 +242,28 @@ def _decode_raw(raw: bytes) -> str:
         return raw.decode("cp1252")
 
 
+def _decimal_comma_to_float(series: pd.Series) -> pd.Series:
+    """German decimal-comma numeric strings -> float. Shared by every source
+    in this module that carries German-locale numbers (charge_points, and
+    the SMARD-derived grid_load/prices/carbon sources); DWD's raw numbers use
+    a plain decimal point (see `_parse_dwd_weather_raw`)."""
+    return pd.to_numeric(series.str.strip().str.replace(",", ".", regex=False), errors="raise")
+
+
+def _raw_files(root: Path, source: str) -> list[Path]:
+    """Every raw file for `source`, sorted by name. Shared by every
+    canonicalise() path: reading only the first file was a real bug here
+    (see the multi-file tests) -- centralising this makes "read every file,
+    not just one" the only way to get raw files at all."""
+    raw_dir = Path(root) / "raw" / source
+    raw_files = sorted(p for p in raw_dir.glob("*") if p.is_file())
+    if not raw_files:
+        raise FileNotFoundError(
+            f"no raw file under {raw_dir}; run fetch({source!r}, start=..., end=...) first"
+        )
+    return raw_files
+
+
 def _parse_installations(raw: bytes) -> pd.DataFrame:
     """Pure function: raw registry bytes -> one row per charging installation.
 
@@ -197,9 +297,6 @@ def _parse_installations(raw: bytes) -> pd.DataFrame:
 
     body = terminator.join(lines[header_idx:])
     raw_df = pd.read_csv(io.StringIO(body), sep=";", dtype=str, keep_default_na=False)
-
-    def _decimal_comma_to_float(series: pd.Series) -> pd.Series:
-        return pd.to_numeric(series.str.strip().str.replace(",", ".", regex=False), errors="raise")
 
     operator = raw_df["Betreiber"].str.strip()
     lat = _decimal_comma_to_float(raw_df["Breitengrad"])
@@ -264,25 +361,9 @@ def _aggregate_sites(installations: pd.DataFrame) -> pd.DataFrame:
     return sites
 
 
-def canonicalise(source: str, *, root: Path = DATA_ROOT) -> Path:
-    """Parse data/raw/<source>/* -> data/canonical/<table>.parquet + <table>.meta.json.
-
-    Pure function of the raw files; safe to re-run. `retrieved_at` in the
-    meta sidecar is the raw file's mtime (not wall-clock at call time) so
-    re-running canonicalise against the same, unchanged raw file yields byte-
-    identical output.
-    """
-    if source not in SOURCES or source != "charge_points":
-        raise NotImplementedError(
-            f"canonicalise({source!r}) is not wired yet; only 'charge_points' is implemented"
-        )
-
-    raw_dir = Path(root) / "raw" / source
-    raw_files = sorted(p for p in raw_dir.glob("*") if p.is_file())
-    if not raw_files:
-        raise FileNotFoundError(
-            f"no raw file under {raw_dir}; run fetch({source!r}, start=..., end=...) first"
-        )
+def _canonicalise_charge_points(*, root: Path) -> Path:
+    source = "charge_points"
+    raw_files = _raw_files(root, source)
     # Every file, not just raw_files[0]. The docstring's `*` is the contract,
     # and reading one file silently produced a short table with no error --
     # masked here only because the registry currently ships as one file.
@@ -322,6 +403,399 @@ def canonicalise(source: str, *, root: Path = DATA_ROOT) -> Path:
     return out_path
 
 
+# --- Europe/Berlin localisation (the real content of issue #8) -------------
+
+
+def _localize_berlin_naive_local(naive: pd.Series) -> tuple[pd.Series, int]:
+    """Naive Europe/Berlin wall-clock Timestamps -> tz-aware UTC Timestamps.
+
+    Handles both DST transitions correctly, using only the stdlib (PEP 495
+    `fold`), and *by construction* rather than by hoping the fixture never
+    exercises the edge:
+
+    - Fall-back ambiguous local times (Europe/Berlin 02:00-02:59 occurs twice
+      in late October): rows are assumed to arrive in real chronological
+      order, as every source in this module actually delivers them. The
+      first time a given naive wall-clock value is seen it is resolved as
+      still-DST (`fold=0`, CEST/UTC+2); the second time, standard time
+      (`fold=1`, CET/UTC+1). This is what makes two rows both labelled
+      "02:00" round-trip to two distinct, correctly-ordered UTC instants
+      instead of colliding into a duplicate.
+    - Spring-forward nonexistent local times (Europe/Berlin 02:00-02:59 never
+      occurs in late March): `zoneinfo` does not raise for these -- per PEP
+      495 it silently extrapolates an offset either side of the gap. That
+      would fabricate a plausible-looking but meaningless UTC instant, so
+      each candidate is round-tripped back to Berlin wall-clock and dropped
+      (returned as NaT, counted) if it doesn't reproduce the original
+      reading. A well-formed source never emits these rows in the first
+      place (there is no such wall-clock instant to report); this is the
+      belt-and-braces guard for a malformed one.
+
+    Returns (utc_series, n_dropped_nonexistent).
+    """
+    seen: dict[datetime, int] = {}
+    utc_values: list[pd.Timestamp] = []
+    n_dropped = 0
+    for ts in naive:
+        py_dt = ts.to_pydatetime()
+        occurrence = seen.get(py_dt, 0)
+        seen[py_dt] = occurrence + 1
+        fold = 1 if occurrence > 0 else 0
+        localized = py_dt.replace(tzinfo=_BERLIN, fold=fold)
+        utc_dt = localized.astimezone(timezone.utc)
+        round_trip = utc_dt.astimezone(_BERLIN).replace(tzinfo=None)
+        if round_trip != py_dt:
+            utc_values.append(pd.NaT)
+            n_dropped += 1
+        else:
+            utc_values.append(pd.Timestamp(utc_dt))
+    return pd.Series(utc_values, index=naive.index), n_dropped
+
+
+def _finalize_local_series(rows: pd.DataFrame, *, value_cols: list[str]) -> tuple[pd.DataFrame, int]:
+    """`rows` (a `t_local_naive` column plus `value_cols`) -> the canonical
+    `t` (UTC) shape: localised, sorted, and asserted strictly increasing with
+    no duplicates. Raises rather than silently keeping a duplicate -- two
+    rows colliding onto the same UTC instant after conversion means the
+    ambiguous-time handling above was fooled, not that the data is fine."""
+    utc, n_dropped = _localize_berlin_naive_local(rows["t_local_naive"])
+    out = rows.assign(t=utc).drop(columns=["t_local_naive"])
+    out = out.dropna(subset=["t"])
+    out = out.sort_values("t").reset_index(drop=True)
+    if not out["t"].is_unique:
+        dupes = sorted(out.loc[out["t"].duplicated(keep=False), "t"].unique())
+        raise ValueError(f"duplicate timestamps after Berlin->UTC conversion: {dupes}")
+    return out[["t", *value_cols]], n_dropped
+
+
+def _resample_15min(
+    df: pd.DataFrame,
+    value_cols: list[str],
+    *,
+    native_resolution_min: int,
+    group_cols: tuple[str, ...] = (),
+) -> tuple[pd.DataFrame, str]:
+    """`df` (already at `native_resolution_min`) -> the canonical 15-minute
+    grid. Only ever resamples DOWN in interval length (i.e. UP in row count)
+    from something coarser than 15 minutes, by forward-fill -- never the
+    other way. Returns (df, method) where `method` is recorded verbatim in
+    the table's `.meta.json` so a forward-filled number's provenance is
+    visible, not just its value."""
+    if native_resolution_min == 15:
+        return df, "native_15min"
+    if native_resolution_min < 15 or native_resolution_min % 15 != 0:
+        raise NotImplementedError(
+            f"resampling {native_resolution_min}-min data onto the 15-min grid "
+            "is only implemented for exact coarser multiples of 15 (forward-"
+            "fill upsample); no wired source needs anything finer-grained yet"
+        )
+    n_steps = native_resolution_min // 15
+
+    def _expand(group: pd.DataFrame) -> pd.DataFrame:
+        reps = group.loc[group.index.repeat(n_steps)].reset_index(drop=True)
+        offsets_min = np.tile(np.arange(n_steps) * 15, len(group))
+        reps["t"] = reps["t"] + pd.to_timedelta(offsets_min, unit="m")
+        return reps
+
+    if group_cols:
+        # Plain iteration, not groupby(...).apply(): apply() over a groupby
+        # can silently drop or reorder the grouping columns depending on
+        # pandas version, which is exactly the kind of thing that should be
+        # loud, not silently "fixed" by a version bump.
+        out = pd.concat(
+            [_expand(group) for _, group in df.groupby(list(group_cols), sort=False)],
+            ignore_index=True,
+        )
+    else:
+        out = _expand(df)
+    out = out.sort_values([*group_cols, "t"]).reset_index(drop=True)
+    method = f"forward_fill_from_{native_resolution_min}min"
+    return out[[*group_cols, "t", *value_cols]], method
+
+
+# --- SMARD-style raw parsing (grid_load, prices, carbon) --------------------
+
+
+def _read_de_series_csv(raw: bytes) -> pd.DataFrame:
+    """Semicolon-separated, German-locale time-series export: strip `#`
+    fixture-provenance comment lines and blank lines, then parse. (Unlike the
+    charge_points registry export, these fixtures carry no real preamble
+    junk -- the leading `#` lines are ours, added to keep the fixtures
+    obviously synthetic, not something the real source would ship.)"""
+    text = _decode_raw(raw)
+    lines = [line for line in text.splitlines() if line.strip() and not line.lstrip().startswith("#")]
+    body = "\n".join(lines)
+    return pd.read_csv(io.StringIO(body), sep=";", dtype=str)
+
+
+def _parse_smard_datetime_local(series: pd.Series) -> pd.Series:
+    """SMARD's "Datum von"/"Datum bis" cells: `DD.MM.YYYY HH:MM`, naive --
+    the wall-clock reading is Europe/Berlin local time, not UTC."""
+    return pd.to_datetime(series.str.strip(), format="%d.%m.%Y %H:%M")
+
+
+def _parse_grid_load_raw(raw: bytes) -> pd.DataFrame:
+    """One smard_load raw file -> rows with a naive local `t` plus MW columns.
+
+    Power (MW) is energy (MWh) divided by the interval length in hours, read
+    from "Datum von"/"Datum bis" -- never a hard-coded /4 (CONVENTIONS.md).
+    `residual_mw` is load minus wind and solar, the standard "residual load"
+    definition (what must be met by everything else)."""
+    df = _read_de_series_csv(raw)
+    t_start = _parse_smard_datetime_local(df["Datum von"])
+    t_end = _parse_smard_datetime_local(df["Datum bis"])
+    interval_hours = (t_end - t_start).dt.total_seconds() / 3600.0
+    load_mw = _decimal_comma_to_float(df["Netzlast [MWh]"]) / interval_hours
+    wind_mw = _decimal_comma_to_float(df["Wind [MWh]"]) / interval_hours
+    solar_mw = _decimal_comma_to_float(df["Photovoltaik [MWh]"]) / interval_hours
+    residual_mw = load_mw - wind_mw - solar_mw
+    return pd.DataFrame(
+        {
+            "t_local_naive": t_start,
+            "load_mw": load_mw,
+            "wind_mw": wind_mw,
+            "solar_mw": solar_mw,
+            "residual_mw": residual_mw,
+        }
+    )
+
+
+def _parse_prices_raw(raw: bytes) -> pd.DataFrame:
+    """One epex_day_ahead raw file -> rows with a naive local `t` plus
+    price_eur_mwh. EUR/MWh is already a rate, not an energy total, so unlike
+    grid_load there is no MWh->MW conversion -- the sign and magnitude read
+    off the file untouched, including negative day-ahead prices."""
+    df = _read_de_series_csv(raw)
+    t_start = _parse_smard_datetime_local(df["Datum von"])
+    price = _decimal_comma_to_float(df["Day-Ahead Preis [EUR/MWh]"])
+    return pd.DataFrame({"t_local_naive": t_start, "price_eur_mwh": price})
+
+
+# Approximate operational (direct-combustion) CO2 intensity by fuel, g/kWh --
+# order-of-magnitude figures consistent with published ranges from
+# Umweltbundesamt / Fraunhofer ISE generation-mix reporting. A named
+# assumption, not a measured quantity (CONVENTIONS.md's rule on named
+# constants vs. invented statistics): renewables/nuclear carry only their
+# direct combustion emissions here (~0-11), not full lifecycle figures.
+CARBON_INTENSITY_FACTORS_G_KWH: dict[str, float] = {
+    "Braunkohle": 1080.0,  # lignite
+    "Steinkohle": 820.0,  # hard coal
+    "Erdgas": 490.0,  # natural gas
+    "Kernenergie": 12.0,  # nuclear
+    "Wind": 11.0,
+    "Photovoltaik": 45.0,  # solar
+}
+
+_GENERATION_MIX_FUELS = list(CARBON_INTENSITY_FACTORS_G_KWH)
+
+
+def _parse_generation_mix_raw(raw: bytes) -> pd.DataFrame:
+    """One generation_mix raw file (generation by fuel type, MWh) -> rows
+    with a naive local `t` plus intensity_g_kwh: the generation-weighted
+    average of CARBON_INTENSITY_FACTORS_G_KWH. A weighted average of rates is
+    scale-invariant in the underlying energy unit, so no MWh->MW conversion
+    is needed here (unlike grid_load)."""
+    df = _read_de_series_csv(raw)
+    t_start = _parse_smard_datetime_local(df["Datum von"])
+    gen = pd.DataFrame(
+        {fuel: _decimal_comma_to_float(df[f"{fuel} [MWh]"]) for fuel in _GENERATION_MIX_FUELS}
+    )
+    factors = pd.Series(CARBON_INTENSITY_FACTORS_G_KWH)
+    total_gen = gen.sum(axis=1)
+    weighted = (gen * factors).sum(axis=1)
+    intensity = weighted / total_gen
+    return pd.DataFrame({"t_local_naive": t_start, "intensity_g_kwh": intensity})
+
+
+# --- DWD raw parsing (weather) ----------------------------------------------
+
+
+def _parse_dwd_weather_raw(raw: bytes) -> pd.DataFrame:
+    """One dwd_weather raw file (one station) -> rows with station_id, a
+    tz-aware UTC `t`, temp_c, wind_ms, ghi_w_m2.
+
+    A simplified schema modeling DWD Open Data's hourly per-station
+    observations, not a byte-identical replica of DWD's real column layout
+    (this issue authors a fixture; there is no real download to match
+    exactly). `datetime_utc` mirrors DWD's real convention of shipping
+    station timestamps in UTC already -- no Europe/Berlin localisation is
+    needed or applied for this source. Dot-decimal numbers, matching DWD's
+    real numeric format (unlike the German-locale SMARD sources above)."""
+    text = _decode_raw(raw)
+    lines = [line for line in text.splitlines() if line.strip() and not line.lstrip().startswith("#")]
+    body = "\n".join(lines)
+    df = pd.read_csv(io.StringIO(body), sep=";", dtype=str)
+    t_utc = pd.to_datetime(df["datetime_utc"].str.strip(), format="%Y%m%d%H", utc=True)
+    return pd.DataFrame(
+        {
+            "station_id": df["station_id"].str.strip(),
+            "t": t_utc,
+            "temp_c": pd.to_numeric(df["temp_c"], errors="raise"),
+            "wind_ms": pd.to_numeric(df["wind_ms"], errors="raise"),
+            "ghi_w_m2": pd.to_numeric(df["ghi_w_m2"], errors="raise"),
+        }
+    )
+
+
+def _write_canonical(
+    df: pd.DataFrame,
+    *,
+    root: Path,
+    table: str,
+    source: Source,
+    raw_files: list[Path],
+    extra_meta: dict,
+) -> Path:
+    """Shared parquet + .meta.json writer for every non-charge_points source.
+    `retrieved_at` is the newest raw file's mtime, matching the charge_points
+    path, so re-running canonicalise against unchanged raw files is a no-op
+    on provenance too."""
+    canonical_dir = Path(root) / "canonical"
+    canonical_dir.mkdir(parents=True, exist_ok=True)
+    out_path = canonical_dir / f"{table}.parquet"
+    df.to_parquet(out_path, index=False)
+
+    retrieved_at = datetime.fromtimestamp(
+        max(p.stat().st_mtime for p in raw_files), tz=timezone.utc
+    ).isoformat()
+    meta_doc = {
+        "source_url": source.url,
+        "license": source.license,
+        "retrieved_at": retrieved_at,
+        "rows": int(len(df)),
+        "resolution_min": 15,  # every canonical table lives on the 15-min grid
+        **extra_meta,
+    }
+    meta_path = canonical_dir / f"{table}.meta.json"
+    meta_path.write_text(json.dumps(meta_doc, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return out_path
+
+
+def _canonicalise_smard_load(*, root: Path) -> Path:
+    raw_files = _raw_files(root, "smard_load")
+    rows = pd.concat([_parse_grid_load_raw(p.read_bytes()) for p in raw_files], ignore_index=True)
+    df, n_dropped = _finalize_local_series(
+        rows, value_cols=["load_mw", "wind_mw", "solar_mw", "residual_mw"]
+    )
+    require_columns(df, ["t", "load_mw", "wind_mw", "solar_mw", "residual_mw"])
+    return _write_canonical(
+        df,
+        root=root,
+        table="grid_load",
+        source=SOURCES["smard_load"],
+        raw_files=raw_files,
+        extra_meta={
+            "resample_method": "native_15min",
+            "n_nonexistent_local_times_dropped": n_dropped,
+        },
+    )
+
+
+def _canonicalise_epex_day_ahead(*, root: Path) -> Path:
+    raw_files = _raw_files(root, "epex_day_ahead")
+    rows = pd.concat([_parse_prices_raw(p.read_bytes()) for p in raw_files], ignore_index=True)
+    hourly, n_dropped = _finalize_local_series(rows, value_cols=["price_eur_mwh"])
+    quarter, method = _resample_15min(hourly, ["price_eur_mwh"], native_resolution_min=60)
+    require_columns(quarter, ["t", "price_eur_mwh"])
+    return _write_canonical(
+        quarter,
+        root=root,
+        table="prices",
+        source=SOURCES["epex_day_ahead"],
+        raw_files=raw_files,
+        extra_meta={
+            "resample_method": method,
+            "native_resolution_min": 60,
+            "n_nonexistent_local_times_dropped": n_dropped,
+        },
+    )
+
+
+def _canonicalise_generation_mix(*, root: Path) -> Path:
+    raw_files = _raw_files(root, "generation_mix")
+    rows = pd.concat([_parse_generation_mix_raw(p.read_bytes()) for p in raw_files], ignore_index=True)
+    hourly, n_dropped = _finalize_local_series(rows, value_cols=["intensity_g_kwh"])
+    quarter, method = _resample_15min(hourly, ["intensity_g_kwh"], native_resolution_min=60)
+    require_columns(quarter, ["t", "intensity_g_kwh"])
+    return _write_canonical(
+        quarter,
+        root=root,
+        table="carbon",
+        source=SOURCES["generation_mix"],
+        raw_files=raw_files,
+        extra_meta={
+            "resample_method": method,
+            "native_resolution_min": 60,
+            "n_nonexistent_local_times_dropped": n_dropped,
+            "emission_factors_g_kwh": CARBON_INTENSITY_FACTORS_G_KWH,
+        },
+    )
+
+
+def _canonicalise_dwd_weather(*, root: Path) -> Path:
+    raw_files = _raw_files(root, "dwd_weather")
+    rows = pd.concat([_parse_dwd_weather_raw(p.read_bytes()) for p in raw_files], ignore_index=True)
+    rows = rows.sort_values(["station_id", "t"]).reset_index(drop=True)
+    dupe_mask = rows.duplicated(subset=["t", "station_id"], keep=False)
+    if dupe_mask.any():
+        raise ValueError(
+            "duplicate (t, station_id) rows in raw weather data:\n"
+            f"{rows.loc[dupe_mask, ['t', 'station_id']]}"
+        )
+    quarter, method = _resample_15min(
+        rows,
+        ["temp_c", "wind_ms", "ghi_w_m2"],
+        native_resolution_min=60,
+        group_cols=("station_id",),
+    )
+    quarter = quarter.sort_values(["t", "station_id"]).reset_index(drop=True)
+    require_columns(quarter, ["t", "station_id", "temp_c", "wind_ms", "ghi_w_m2"])
+    return _write_canonical(
+        quarter,
+        root=root,
+        table="weather",
+        source=SOURCES["dwd_weather"],
+        raw_files=raw_files,
+        extra_meta={"resample_method": method, "native_resolution_min": 60},
+    )
+
+
+_CANONICALISE_DISPATCH = {
+    "charge_points": _canonicalise_charge_points,
+    "smard_load": _canonicalise_smard_load,
+    "epex_day_ahead": _canonicalise_epex_day_ahead,
+    "generation_mix": _canonicalise_generation_mix,
+    "dwd_weather": _canonicalise_dwd_weather,
+}
+
+
+def canonicalise(source: str, *, root: Path = DATA_ROOT) -> Path:
+    """Parse data/raw/<source>/* -> data/canonical/<table>.parquet + <table>.meta.json.
+
+    Pure function of the raw files; safe to re-run. `retrieved_at` in the
+    meta sidecar is the raw file's mtime (not wall-clock at call time) so
+    re-running canonicalise against the same, unchanged raw file yields byte-
+    identical output.
+    """
+    if source in ("balancing", "regelleistung"):
+        raise NotImplementedError(
+            "canonicalise('regelleistung') is deferred, per issue #8: "
+            "regelleistung.net's balancing capacity auction results may "
+            "require a registered account to access programmatically, which "
+            "this lane will not work around (no scraping around a "
+            "login/paywall, no committed credentials -- CONVENTIONS.md). "
+            "Confirming whether an account is actually required, and if so "
+            "getting one, needs an `agent:devin` issue before `balancing` "
+            "can be wired; it is not faked here."
+        )
+    if source not in SOURCES or source not in _CANONICALISE_DISPATCH:
+        raise NotImplementedError(
+            f"canonicalise({source!r}) is not wired yet; only "
+            f"{sorted(_CANONICALISE_DISPATCH)} are implemented (see contracts/src/data.md)"
+        )
+    return _CANONICALISE_DISPATCH[source](root=root)
+
+
 def load(
     table: str,
     *,
@@ -345,7 +819,7 @@ def load(
     if sites is not None and "site_id" in df.columns:
         df = df[df["site_id"].isin(sites)]
 
-    sort_cols = [c for c in ("t", "site_id") if c in df.columns]
+    sort_cols = [c for c in ("t", "site_id", "station_id") if c in df.columns]
     if sort_cols:
         df = df.sort_values(sort_cols).reset_index(drop=True)
     return df
@@ -361,10 +835,41 @@ def meta(table: str, *, root: Path = DATA_ROOT) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+
+# Small, hand-picked reference set of station locations spread across
+# different regions/borders of Germany, so nearest_weather_station() has
+# something real to pick among. Coordinates are approximate city locations
+# (public knowledge), not literal DWD station numbers -- this lane has no
+# real DWD download to source exact station coordinates from (see module
+# docstring). Station ids match the `station_id` values a canonicalised
+# `weather` table can carry, but this registry does not require that table
+# to exist: nearest_weather_station() is a pure function of these constants.
+_WEATHER_STATIONS: dict[str, tuple[float, float]] = {
+    "DWD-BER": (52.52, 13.40),  # Berlin
+    "DWD-MUC": (48.14, 11.58),  # Munich
+    "DWD-HAM": (53.55, 9.99),  # Hamburg
+    "DWD-KOL": (50.94, 6.96),  # Cologne
+    "DWD-SAAR": (49.24, 6.99),  # Saarbruecken, near the French border
+    "DWD-DRS": (51.05, 13.74),  # Dresden, near the Czech/Polish border
+}
+
+
+def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    r_km = 6371.0
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dlambda / 2) ** 2
+    return 2 * r_km * math.asin(math.sqrt(a))
+
+
 def nearest_weather_station(lat: float, lon: float) -> str:
-    """Part of the lane's contracted public surface, but depends on the DWD
-    weather source, which is not wired in this issue."""
-    raise NotImplementedError(
-        "nearest_weather_station() depends on the DWD weather source (table "
-        "'weather'), which is not wired yet — see contracts/src/data.md"
+    """The `_WEATHER_STATIONS` id closest to (lat, lon) by great-circle
+    distance. A pure function of fixed constants and its arguments: same
+    coordinates always return the same station id (`min` over a Python dict
+    iterates in a fixed, insertion-preserved order, so ties -- there are none
+    among these six -- would also resolve deterministically)."""
+    return min(
+        _WEATHER_STATIONS,
+        key=lambda station_id: _haversine_km(lat, lon, *_WEATHER_STATIONS[station_id]),
     )

@@ -244,21 +244,49 @@ def test_meta_sites_reports_all_five_provenance_fields(tmp_path: Path) -> None:
 # --- SOURCES / fetch / require_columns / nearest_weather_station --------------
 
 
-def test_sources_only_wires_charge_points() -> None:
+def test_sources_wires_charge_points_and_the_issue_8_time_series_sources() -> None:
     assert "charge_points" in api.SOURCES
     assert api.SOURCES["charge_points"].canonical_table == "sites"
+    assert api.SOURCES["smard_load"].canonical_table == "grid_load"
+    assert api.SOURCES["epex_day_ahead"].canonical_table == "prices"
+    assert api.SOURCES["dwd_weather"].canonical_table == "weather"
+    assert api.SOURCES["generation_mix"].canonical_table == "carbon"
+    # `balancing` is deliberately NOT in SOURCES: deferred, see the
+    # canonicalise() test below.
+    assert "regelleistung" not in api.SOURCES
+    assert "balancing" not in api.SOURCES
 
 
-def test_fetch_raises_not_implemented_for_unwired_sources(tmp_path: Path) -> None:
+def test_fetch_raises_not_implemented_for_unwired_source_name(tmp_path: Path) -> None:
     from datetime import date
 
     with pytest.raises(NotImplementedError):
-        api.fetch("prices", start=date(2026, 1, 1), end=date(2026, 1, 2), root=tmp_path)
+        api.fetch("balancing", start=date(2026, 1, 1), end=date(2026, 1, 2), root=tmp_path)
 
 
-def test_canonicalise_raises_not_implemented_for_unwired_sources(tmp_path: Path) -> None:
+def test_fetch_raises_not_implemented_for_date_partitioned_sources_too(tmp_path: Path) -> None:
+    # smard_load IS in SOURCES (canonicalise/load work against raw files) but
+    # fetch() itself is not wired for it: real fetch needs per-date-range
+    # download logic this issue does not build/verify against a live SMARD
+    # endpoint. Silently downloading SOURCES[...].url as a single file would
+    # just save the download-center HTML page, not real per-partition data.
+    from datetime import date
+
+    with pytest.raises(NotImplementedError, match="date-partitioned"):
+        api.fetch("smard_load", start=date(2026, 1, 1), end=date(2026, 1, 2), root=tmp_path)
+
+
+def test_canonicalise_raises_not_implemented_for_unwired_source_name(tmp_path: Path) -> None:
     with pytest.raises(NotImplementedError):
-        api.canonicalise("prices", root=tmp_path)
+        api.canonicalise("nonexistent_source", root=tmp_path)
+
+
+def test_canonicalise_balancing_raises_not_implemented_and_explains_why(tmp_path: Path) -> None:
+    # regelleistung.net's balancing capacity auctions may need an account;
+    # #8 defers this rather than faking a `balancing` table -- and says so
+    # in the exception, not just in a PR comment.
+    with pytest.raises(NotImplementedError, match="regelleistung"):
+        api.canonicalise("balancing", root=tmp_path)
 
 
 def test_require_columns_raises_on_missing_column() -> None:
@@ -266,11 +294,6 @@ def test_require_columns_raises_on_missing_column() -> None:
     api.require_columns(df, ["a"])  # does not raise
     with pytest.raises(AssertionError):
         api.require_columns(df, ["a", "b"])
-
-
-def test_nearest_weather_station_not_implemented_yet() -> None:
-    with pytest.raises(NotImplementedError):
-        api.nearest_weather_station(48.0, 9.0)
 
 
 # --- multi-file ingestion and line-terminator tolerance -----------------------
