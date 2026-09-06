@@ -711,11 +711,27 @@ def _pooling(spec, firm, day_index, warns):
                           "diversification_curve)",
         )
     else:
-        pooled = pool_fn(firm, method=spec.pool_method, seed=spec.seed)
-        data.require_columns(pooled, ["t", "pool_firm_kw"])
-        pooled = pooled.copy()
-        pooled["t"] = pd.DatetimeIndex(pooled["t"])
-        pool_day = pooled[pooled["t"].isin(day_index)].sort_values("t").reset_index(drop=True)
+        try:
+            pooled = pool_fn(firm, method=spec.pool_method, seed=spec.seed)
+        except market.MarketError as exc:
+            # pool() can refuse a portfolio it was handed (e.g. a site with zero residual
+            # variation, which would otherwise silently contribute an independent --
+            # flattering -- column to the dependence structure) without that portfolio's
+            # scenario being unbuildable. Treated exactly like `pool_fn is None` above:
+            # a displayable warning, and every figure this feeds stays null, never 0.0.
+            warns.add(
+                "pool_failed",
+                "src/market",
+                f"pool() could not aggregate this portfolio's firm capacity into a pooled "
+                f"promise: {exc}; pool_firm_mw and every figure derived from it "
+                "(peakers_displaced, capacity_revenue_eur) is null, not zero",
+                detail_text=str(exc),
+            )
+        else:
+            data.require_columns(pooled, ["t", "pool_firm_kw"])
+            pooled = pooled.copy()
+            pooled["t"] = pd.DatetimeIndex(pooled["t"])
+            pool_day = pooled[pooled["t"].isin(day_index)].sort_values("t").reset_index(drop=True)
 
     rows: list[dict] = []
     if curve_fn is None:
@@ -730,11 +746,30 @@ def _pooling(spec, firm, day_index, warns):
     else:
         n_sites = int(firm["site_id"].nunique())
         sizes = list(range(1, n_sites + 1))
-        curve = curve_fn(firm, sizes=sizes, seed=spec.seed)
-        rows = [
-            {k: _f(v) if isinstance(v, (int, float, np.generic)) else v for k, v in row.items()}
-            for row in curve.to_dict("records")
-        ]
+        try:
+            curve = curve_fn(firm, sizes=sizes, seed=spec.seed)
+        except market.MarketError as exc:
+            # diversification_curve() requires `realised` (t, site_id, realised_kw) and has
+            # no default for it -- this repo has no measured realised load anywhere
+            # (`data/raw/` is empty), so the real function always refuses here. Fabricating
+            # a `realised` frame to satisfy the call would make the shortfall rate
+            # tautological (derived from the same distribution that produced the promise)
+            # while looking like a measurement -- exactly the silent-success-on-an-unchecked
+            # failure-path defect this project exists to avoid. Treated like
+            # `curve_fn is None`: a displayable warning, an empty (not fabricated, not
+            # zero-filled) curve, and the scenario still succeeds.
+            warns.add(
+                "diversification_curve_failed",
+                "src/market",
+                f"diversification_curve() could not be computed for this scenario: {exc}; "
+                "/pooling returns an empty curve rather than a fabricated one",
+                detail_text=str(exc),
+            )
+        else:
+            rows = [
+                {k: _f(v) if isinstance(v, (int, float, np.generic)) else v for k, v in row.items()}
+                for row in curve.to_dict("records")
+            ]
     return pool_day, rows
 
 

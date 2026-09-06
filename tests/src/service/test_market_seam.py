@@ -31,19 +31,31 @@ its real signature is `diversification_curve(firm, *, sizes, seed, realised=None
 correlation=None, method="gaussian_copula")`, and its body raises `MarketError` unconditionally
 when `realised is None` -- "`realised` has no default" is in its own docstring, because a
 shortfall rate derived from the same distribution that produced the promise would be
-tautological. `_pipeline._pooling()` calls it as `curve_fn(firm, sizes=sizes, seed=spec.seed)`
--- it never passes `realised`. That call is accepted by the signature (keyword-compatible) but
-will raise on every invocation of the *real* function. Since `_pooling()` is called
-unconditionally inside `build()` for every scenario, this means: the instant #33 merges,
-every `POST /api/scenario` request in this project fails, because nothing catches the
-`MarketError`. `test_a_documented_diversification_curve_would_break_every_scenario_today`
-below proves this with a fake that faithfully reproduces only that one behaviour (raises
-without `realised`, exactly like the real one) -- it is not a fiction, it is what
-`git show claim/33:...` says the function does. The other tests in this file use a
-deliberately looser fake for `diversification_curve` (never requires `realised`) purely to
-exercise `_pooling()`'s row-shape arithmetic in isolation from that unresolved bug; that
-divergence from the real contract is called out here so nobody mistakes it for a rebuttal of
-the finding above.
+tautological. `_pipeline._pooling()` called it as `curve_fn(firm, sizes=sizes, seed=spec.seed)`
+-- it never passed `realised`. That call was accepted by the signature (keyword-compatible) but
+raised on every invocation of the *real* function -- and since `_pooling()` runs unconditionally
+inside `build()` for every scenario, the instant #33 merged (`origin/main` 5e2d87a), every
+`POST /api/scenario` request started failing with a 500, because nothing caught the
+`MarketError`. This was confirmed empirically, not just read off the source: a disposable
+worktree combining #33's merged `src/market` with this lane's (then-unfixed) code failed
+58 of 105 tests, every one with `500 {"error":"scenario_failed","detail":"MarketError: cann..."}`.
+
+`pool()` has the same twin failure mode for a different reason -- it raises `MarketError` when
+a site's firm-capacity series has zero residual variation, which is exactly the error the
+empirical run surfaced (`"cannot measure correlation: ... zero residual variation"`,
+`src/market/api.py:451` on `origin/main`).
+
+`_pipeline._pooling()` now catches `market.MarketError` around both the `pool_fn(...)` and
+`curve_fn(...)` calls, exactly the way it already treated (and still treats)
+`pool_fn is None` / `curve_fn is None`: a displayable, attributed warning, the dependent
+figure(s) left null (never `0.0`, never fabricated), and the scenario still succeeds.
+`test_a_documented_diversification_curve_failure_degrades_to_null_not_a_500` and
+`test_pool_failure_degrades_to_null_not_a_500` below pin that fixed contract, using fakes
+that faithfully reproduce each function's real failure mode rather than a generic exception.
+The other tests in this file use a deliberately looser fake for `diversification_curve`
+(never requires `realised`) purely to exercise `_pooling()`'s row-shape arithmetic on a
+*successful* call, in isolation from the failure path; that divergence from the real contract
+is called out here so nobody mistakes it for a rebuttal of the finding above.
 """
 
 from __future__ import annotations
@@ -211,38 +223,87 @@ def test_pool_unavailable_still_nulls_rather_than_zeroes(client):
 
 
 # ---------------------------------------------------------------------------
-# the critical discovery: the real diversification_curve() would break every scenario
+# the seam bug found while signature-checking, now fixed: a MarketError from
+# diversification_curve() (or pool()) degrades to a null figure, never a 500
 # ---------------------------------------------------------------------------
 
 
-def test_a_documented_diversification_curve_would_break_every_scenario_today(
+def test_a_documented_diversification_curve_failure_degrades_to_null_not_a_500(
     client, monkeypatch
 ):
-    """`market.diversification_curve()` (claim/33) unconditionally raises `MarketError`
-    when `realised` is not supplied, and has no default that avoids it. `_pipeline._pooling()`
-    calls `curve_fn(firm, sizes=sizes, seed=spec.seed)` -- it never passes `realised`, and
-    nothing between that call and the HTTP layer catches `MarketError`.
+    """`market.diversification_curve()` (merged in #33, `origin/main`) unconditionally
+    raises `MarketError` when `realised` is not supplied, and has no default that avoids
+    it -- "`realised` has no default" is in its own docstring, because a shortfall rate
+    derived from the same distribution that produced the promise would be tautological.
+    This repo has no measured realised load anywhere (`data/raw/` is empty), so the real
+    function always refuses on this project's data, on every scenario, forever.
 
-    This test pins that TODAY's `_pipeline.py` produces a `scenario_failed` 500 for a
-    scenario that would otherwise succeed, the moment a `diversification_curve` matching
-    the real, documented contract is present -- reproducing only that one behaviour
-    faithfully (see `_fake_diversification_curve_faithful` and the module docstring). It is
-    not asserting desired behaviour; it is recording a real, currently-unaddressed
-    integration risk between this lane and #33 so it cannot land silently. If `_pooling()`
-    is ever changed to supply `realised`, or to catch `MarketError` and treat the curve as
-    unavailable (the way a missing `pool`/`diversification_curve` is already handled), this
-    test's expected outcome should flip to a 200 -- and it will need updating, on purpose.
+    `_pipeline._pooling()` previously did not catch that: it called
+    `curve_fn(firm, sizes=sizes, seed=spec.seed)` uncaught, so the instant #33 merged,
+    every `POST /api/scenario` failed with a `scenario_failed` 500 -- confirmed empirically
+    against the real, merged `src/market` (58/105 tests failing with `MarketError: cann...`
+    before this fix; a disposable worktree combining `origin/main`'s `src/market` with this
+    lane's code is required to see it, because `claim/28` alone branches from before #33 and
+    has no real `pool`/`diversification_curve` to fail against).
+
+    `_pipeline._pooling()` now catches `market.MarketError` around the `curve_fn(...)` call
+    exactly the way it already treats `curve_fn is None` a few lines above: a displayable,
+    attributed warning naming `diversification_curve`, an EMPTY curve (never fabricated,
+    never zero-filled), and the scenario still succeeds. This test pins the fixed contract.
+
+    It deliberately does NOT fix this by having `_pipeline.py` fabricate a `realised` frame
+    to satisfy the call -- `_fake_diversification_curve_faithful` still raises
+    `AssertionError("unreachable")` if it is ever called with a non-`None` `realised`, so if
+    a future change starts passing a manufactured one instead of degrading gracefully, this
+    test fails loudly (a 500 from that `AssertionError`) rather than silently starting to
+    assert a fabricated number.
     """
     monkeypatch.setattr(
         market, "diversification_curve", _fake_diversification_curve_faithful, raising=False
     )
 
-    response = _post_and_wait(client, BROKEN_CURVE_SPEC)
+    result = warm(client, BROKEN_CURVE_SPEC)  # 200, not 500 -- the whole point of the fix
 
-    assert response.status_code == 500, (
-        f"expected the documented diversification_curve() contract to break this scenario; "
-        f"got {response.status_code}: {response.text}"
-    )
-    payload = response.json()
-    assert payload["error"] == "scenario_failed"
-    assert "MarketError" in payload["detail"] or "realised" in payload["detail"]
+    codes = [w["code"] for w in result["warnings"]]
+    assert "diversification_curve_failed" in codes
+    failure = next(w for w in result["warnings"] if w["code"] == "diversification_curve_failed")
+    assert failure["lane"] == "src/market"
+    assert "diversification_curve" in failure["message"]
+    assert "realised" in failure["detail"]["detail_text"]
+
+    # the empty-curve half of "zero and unknown must never look the same": /pooling shows
+    # an empty list, not a zero-filled or fabricated one
+    pooling = client.get(f"/api/scenario/{result['id']}/pooling").json()
+    assert pooling["diversification_curve"] == []
+
+
+def test_pool_failure_degrades_to_null_not_a_500(client, monkeypatch):
+    """`pool()`'s own twin failure mode: it raises `MarketError` (not `curve_fn`'s) when a
+    site has zero residual variation in its firm-capacity time series -- the real error
+    the coordinator's empirical run against the merged market actually saw
+    (`"cannot measure correlation: site(s) ... have zero residual variation"`,
+    `src/market/api.py:451` on `origin/main`). `_pipeline._pooling()` must not fix only the
+    `diversification_curve` twin and leave this one to take the whole scenario down; both
+    are caught the same way.
+    """
+
+    def raising_pool(firm, *, method, sites=None, seed=0, correlation=None, n_draws=None):
+        raise market.MarketError(
+            "cannot measure correlation: site(s) ['BY-80331-aaaa0001'] have zero residual "
+            "variation, so no dependence structure could be measured"
+        )
+
+    monkeypatch.setattr(market, "pool", raising_pool, raising=False)
+
+    result = warm(client, {**FEASIBLE, "seed": 90212})  # 200, not a 500
+
+    assert result["totals"]["pool_firm_mw"] is None
+    assert result["totals"]["peakers_displaced"] is None
+    assert result["totals"]["capacity_revenue_eur"] is None
+    codes = [w["code"] for w in result["warnings"]]
+    assert "pool_failed" in codes
+    failure = next(w for w in result["warnings"] if w["code"] == "pool_failed")
+    assert failure["lane"] == "src/market"
+    assert "residual variation" in failure["detail"]["detail_text"]
+    body = client.get(f"/api/scenario/{result['id']}/map").json()
+    assert all(row["revenue_eur"] is None for row in body["sites"])
