@@ -112,6 +112,37 @@ wrong.
 - A lane's verify command (`docs/verify.txt`) must pass on a machine that has never downloaded a
   dataset. If your lane needs real data to be meaningful, ship a 3-site fixture.
 
+## Cross-lane integration tier (`tests/integration/`)
+`docs/verify.txt` + `resolve`/`run` (`.github/workflows/checks.yml`) map one PR to exactly one
+lane's suite. That is correct for lane confinement and it has a structural blind spot: a defect
+that lives only at the seam BETWEEN two lanes' real, merged code is invisible to both lanes'
+suites individually, because no single PR's CI run ever executes both lanes' real implementations
+together (issue #38 — `src/service` calling `src.market.pool`/`diversification_curve` was dead
+code, then live and uncovered, and no PR's CI saw either state as a defect). `tests/integration/`
+exists for exactly this class of claim and nothing else:
+
+- **Belongs here**: a guarantee that is only checkable with two or more lanes' REAL code running
+  together — stubbing either side would make the test pass vacuously (`tests/integration/README.md`
+  walks through a worked example). Design-owned, like `contracts/`; runs on every PR regardless of
+  lane (wired directly into `.github/workflows/checks.yml`, not through `docs/verify.txt` — see
+  that file's comment on why a per-lane entry there is the wrong mechanism for a check that isn't
+  a lane).
+- **Belongs in `tests/<lane>/` instead**: anything expressible as one lane's reaction to a
+  fixture shaped like the CONTRACT, even if the fixture stands in for another lane. `src/service`
+  asserting its own arithmetic against a stubbed `market.pool` is a lane test; asserting that the
+  real, merged `market.pool` produces a usable number is not.
+
+**A lane that guards a code path on another lane's not-yet-implemented function must pin that path
+with a stub in-lane.** Landing a cross-lane call before its provider lane exists is normal — lanes
+are built against contracts, not against each other's finished code — but the guarded branch must
+not be allowed to stay dead code that starts running, untested, the moment the other lane merges.
+Wrap the call so a missing/failing upstream degrades to a `warnings[]` entry rather than an
+exception (`_pipeline._pooling()`'s `try/except market.MarketError` is the reference example), and
+add an in-lane test with a same-call-shape stand-in that exercises the guarded branch's own logic
+regardless of merge order. That test proves the lane's own code is correct in isolation; it does
+not and cannot prove the real upstream function agrees once merged — that second half is exactly
+what `tests/integration/` is for, and neither substitutes for the other.
+
 ## Provenance rule
 Every figure that reaches the UI or the pitch traces to a canonical table (with its `.meta.json`
 source URL) or to a named constant in `src/market/api.py::ASSUMPTIONS` with a comment saying

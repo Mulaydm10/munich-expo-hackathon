@@ -4,9 +4,15 @@
 # fork-authored code.
 #
 # Job layout:
-#   lane     - branch/role and lane-path enforcement; revert/<sha> = exact inverse of one merged claim commit (contents/issues/pull-requests: read)
-#   resolve  - map the issue's lane to a command in docs/verify.txt read from the BASE sha
-#   run      - docs/setup.sh (from BASE) then that command on the PR head, contents: read only, only after lane+resolve pass
+#   lane        - branch/role and lane-path enforcement; revert/<sha> = exact inverse of one merged claim commit (contents/issues/pull-requests: read)
+#   resolve     - map the issue's lane to a command in docs/verify.txt read from the BASE sha
+#   run         - docs/setup.sh (from BASE) then that command on the PR head, contents: read only, only after lane+resolve pass
+#   integration - tests/integration/ (cross-lane tier, contracts/CONVENTIONS.md "Cross-lane
+#                 integration tier"), on every PR regardless of lane/scope; ADDITIVE to `run`,
+#                 never a substitute for it. Not a lane: deliberately not a docs/verify.txt entry
+#                 (the `lane` job's "lane set is well-formed" step reads every verify.txt line as
+#                 a lane name, and a design/* PR touching tests/integration/ would then trip its
+#                 own "design/* stays out of lane directories" check).
 #
 # These jobs BLOCK merges only if branch protection marks them required.
 # Branch protection needs a public repo or GitHub Pro/org; otherwise they are advisory.
@@ -195,3 +201,39 @@ jobs:
           set -f
           # shellcheck disable=SC2086
           $CMD
+
+  # Cross-lane tier (contracts/CONVENTIONS.md "Cross-lane integration tier"): runs on every
+  # PR that passes `lane` (claim/*, design/*, revert/<sha>, or a solo-mode owner PR),
+  # regardless of which lane (if any) `resolve`/`run` picked -- issue #38: a defect that
+  # lives only at the seam between two lanes' real, merged code is invisible to any one
+  # lane's suite, so this job is not conditioned on `resolve.outputs.cmd` the way `run` is.
+  # Additive to `run`, never a replacement for it.
+  integration:
+    needs: [lane]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      BASE_REF: ${{ github.event.pull_request.base.ref }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - run: echo "BASE_SHA=$(git rev-parse "origin/$BASE_REF")" >> "$GITHUB_ENV"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: runtime setup (docs/setup.sh from reviewed base, never from the PR head)
+        run: |
+          if git cat-file -e "$BASE_SHA:docs/setup.sh" 2>/dev/null; then
+            git show "$BASE_SHA:docs/setup.sh" > /tmp/setup.sh
+            bash -e /tmp/setup.sh
+          elif git cat-file -e "$BASE_SHA:requirements-dev.txt" 2>/dev/null; then
+            git show "$BASE_SHA:requirements-dev.txt" > /tmp/requirements-dev.txt
+            python3 -m pip install -q -r /tmp/requirements-dev.txt
+          else
+            echo "no docs/setup.sh or requirements-dev.txt on base"
+          fi
+      - name: tests/integration (cross-lane, every PR)
+        run: python3 -m pytest tests/integration -q
