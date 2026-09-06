@@ -74,6 +74,24 @@ kept that invisible.
 Preferred over coercion, where the choice exists: reject the input (`_no_nan`) or remove the cause.
 Missing data is a fact the operator needs, not something to paper over with a permissive default.
 
+### Measure the physical quantity, not the derived one
+A telemetry figure must be computed from the thing it claims to describe. Two ways this rule has
+already been broken here, both of them past a green suite:
+
+- `src/market`'s `penalty_bind_rate` counted how often the penalty *in euros* was non-zero. Under a
+  negative price the penalty silently inverted sign and the rate kept reading correctly, because
+  money is downstream of the bug. Counting the *kWh shortfall* — the physical event — catches it.
+- `src/sched`'s `reduction_kw_achieved` reported the envelope-tightening fraction the solver proved
+  feasible, not the kilowatts the amended schedule actually shed. It read full delivery for a call
+  that shed nothing, and `settle()` invoiced off it.
+
+So: derive a metric from measured state (a diff of two schedules, a shortfall in kWh, a count of
+rows), never from the search parameter, feasibility flag or intermediate that *led to* the state.
+If a metric cannot be made to move by any fixture you can write, it is not evidence — and if the
+coercion behind it turns out to be physically impossible, delete the coercion rather than ship a
+counter pinned at zero. A number that cannot vary reads as proof while proving nothing, which is
+worse than no number at all.
+
 ## Precedence when documents disagree
 `contracts/` wins over an issue body, over a docstring, over neighbouring code. An issue is a
 request for work and may be written before the interface settles; the contract is the interface
