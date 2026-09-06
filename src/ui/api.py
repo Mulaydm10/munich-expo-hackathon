@@ -59,6 +59,14 @@ and then, per screen:
                           day screen renders. Used only to build a default
                           `reduction_event` when the service did not send one; never
                           displayed on this screen.
+           `reduction_event_input`: OPTIONAL -- raw string values from `call.html`'s
+                          adjust-event form (issue #40 follow-up), keyed by the same
+                          four field names, as a caller (`src/service`) would read off
+                          a resubmitted form/query string. When present, `render()`
+                          builds the screen's `reduction_event` from THIS instead of
+                          `intervals` or any prior `reduction_event` -- see
+                          `build_reduction_event_from_input()`. Absent (not merely
+                          empty) means "the operator has not submitted the form yet".
   pooling  `curve`      : [{n_sites, firm_kw_per_site, shortfall_rate}]
                           (`/api/scenario/{id}/pooling`, i.e. `diversification_curve` rows)
   ledger   `totals`     : `ScenarioResult.totals`
@@ -474,6 +482,68 @@ def default_reduction_event(intervals: Any) -> dict[str, Any] | None:
     }
 
 
+def build_reduction_event_from_input(raw: Any) -> dict[str, Any]:
+    """A candidate `ReductionEvent`, built from the four raw values an operator typed
+    into `call.html`'s adjust-event form (issue #40's follow-up: the issue's "let the
+    operator adjust it" is part of the requirement, not colour). `raw` is a mapping of
+    the same four field names to whatever a browser form submission carries -- plain
+    strings, one per field the form always names, whether the operator touched it or
+    left the pre-filled default alone.
+
+    This does exactly two things and nothing else, so `reduction_event_valid()` --
+    called on the result by the same one template expression that already gates the
+    computed default -- remains the ONLY place that decides whether the outcome may be
+    POSTed. There is no second copy of the validity rules here:
+
+      - An EMPTY field (absent, `None`, or a string that is blank after stripping)
+        becomes an ABSENT key, never a coerced zero. "Zero and unknown must never look
+        the same" (contracts/CONVENTIONS.md) applies to a cleared form field exactly as
+        it does to an API response: `reduction_kw: 0.0` is a real, valid event that
+        promises nothing, and silently producing one because the operator cleared the
+        box would be the exact coercion this project's own history warns against.
+      - A non-empty string for `notice_min`, `duration_min` or `reduction_kw` is parsed
+        as a `float` when it parses as one; when it does not (`"fifteen"`, `"1e"`, a
+        thousands-separated `"1,000"`, ...) it is passed through UNCHANGED -- the exact
+        string the operator typed -- so `reduction_event_valid()`, which requires a
+        real `int`/`float`, rejects it for what it actually is instead of this function
+        silently discarding or defaulting it. This is the one coercion this function
+        performs (string -> float on a value that parses); the fixtures around this
+        function pin both ends of it: a numeric string that survives and a
+        non-numeric one that does not.
+      - `call_t` is never parsed or reformatted here -- it travels through as exactly
+        the string the operator typed, wire-shaped or not, and `reduction_event_valid()`
+        decides whether it is a parseable, timezone-aware timestamp. Converting a
+        Berlin-local clock reading into UTC would be a second coercion this lane has
+        chosen not to add: the form shows and edits the same UTC ISO string the wire
+        uses, so there is no local-time value to convert.
+
+    Every key outside `REDUCTION_EVENT_KEYS` is dropped, so a stray query parameter, a
+    submit button's own name, or anything else riding along with the submission can
+    never reach the POST body -- only these four keys, or fewer, ever come out of this
+    function.
+    """
+    event: dict[str, Any] = {}
+    if not isinstance(raw, Mapping):
+        return event
+    for key in REDUCTION_EVENT_KEYS:
+        if key not in raw:
+            continue
+        value = raw[key]
+        if value is None:
+            continue
+        if isinstance(value, str):
+            value = value.strip()
+            if value == "":
+                continue
+            if key != "call_t":
+                try:
+                    value = float(value)
+                except ValueError:
+                    pass  # kept as the operator's own string; reduction_event_valid() rejects it
+        event[key] = value
+    return event
+
+
 def reduction_event_valid(event: Any) -> bool:
     """True only when `event` is a `ReductionEvent` the service's dispatch validator
     will accept exactly as it stands.
@@ -577,16 +647,27 @@ def render(screen: str, context: Mapping[str, Any] | None = None) -> str:
         raise ValueError(f"unknown screen {screen!r}; must be one of {SCREENS}")
     ctx: dict[str, Any] = dict(context or {})
     ctx["screen"] = screen
-    if screen == "call" and not has_value(ctx, "reduction_event"):
-        # issue #40 finding 1: nothing in production ever supplied `reduction_event`,
-        # so the dispatch button was permanently disabled. Build a default from the
-        # day's own timeseries when the caller passed one and did not already supply an
-        # event; an explicit `reduction_event` (even an invalid one -- see
-        # `reduction_event_valid`) is never overridden, so a real service bug stays
-        # visible instead of being silently papered over.
-        computed = default_reduction_event(ctx.get("intervals"))
-        if computed is not None:
-            ctx["reduction_event"] = computed
+    if screen == "call":
+        reduction_event_input = ctx.get("reduction_event_input")
+        if reduction_event_input is not None:
+            # issue #40 follow-up: the operator submitted call.html's adjust-event
+            # form. Their submission is authoritative -- even a resubmission that
+            # cleared a field -- and replaces any prior `reduction_event` (default or
+            # service-supplied). It goes through the SAME `reduction_event_valid()`
+            # the template already calls to gate the computed default; this branch
+            # invents no second validation path.
+            ctx["reduction_event"] = build_reduction_event_from_input(reduction_event_input)
+        elif not has_value(ctx, "reduction_event"):
+            # issue #40 finding 1: nothing in production ever supplied
+            # `reduction_event`, so the dispatch button was permanently disabled.
+            # Build a default from the day's own timeseries when the caller passed
+            # one and did not already supply an event; an explicit `reduction_event`
+            # (even an invalid one -- see `reduction_event_valid`) is never
+            # overridden, so a real service bug stays visible instead of being
+            # silently papered over.
+            computed = default_reduction_event(ctx.get("intervals"))
+            if computed is not None:
+                ctx["reduction_event"] = computed
     template = jinja_env().get_template(_TEMPLATE_BY_SCREEN[screen])
     return template.render(**ctx)
 

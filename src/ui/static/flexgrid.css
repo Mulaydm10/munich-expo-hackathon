@@ -93,6 +93,26 @@ kbd {
   padding: 0.75rem 1rem;
 }
 
+/* The call screen's adjust-event form (#40 follow-up): a default is a starting point,
+   not the only figure an operator can dispatch. */
+.reduction-event-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.75rem;
+  margin: 0.75rem 0 1.25rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--rule);
+}
+.reduction-event-form .form-lede { flex-basis: 100%; margin: 0 0 0.25rem; font-weight: 600; }
+.reduction-event-form label { display: flex; flex-direction: column; gap: 0.2rem; font-size: 0.85rem; }
+.reduction-event-form input {
+  font: inherit;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--rule);
+  min-width: 11ch;
+}
+
 /* warnings[] is rendered, never swallowed — top of page, full width, always open. */
 .warnings {
   border: 3px solid var(--warn-edge);

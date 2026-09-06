@@ -200,3 +200,116 @@ def test_reduction_event_keys_match_what_default_reduction_event_produces() -> N
     builds could fail its own validity gate."""
     event = api.default_reduction_event(TIMESERIES)
     assert set(event.keys()) == api.REDUCTION_EVENT_KEYS
+
+
+# --- build_reduction_event_from_input(): the operator-adjust affordance ------------
+#
+# Issue #40 follow-up: "let the operator adjust it" is part of the requirement, not
+# colour. `build_reduction_event_from_input()` turns raw form-field strings into a
+# candidate event; `reduction_event_valid()` (already tested above) is the ONLY thing
+# that decides whether the result may be POSTed -- this section tests construction, not
+# a second copy of the validity rules.
+
+RAW_FORM_INPUT = {
+    "call_t": "2026-10-25T16:00:00+00:00",
+    "notice_min": "15",
+    "duration_min": "240",
+    "reduction_kw": "1000",
+}
+
+
+def test_a_full_valid_submission_becomes_a_valid_event() -> None:
+    event = api.build_reduction_event_from_input(RAW_FORM_INPUT)
+    assert event == {
+        "call_t": "2026-10-25T16:00:00+00:00",
+        "notice_min": 15.0,
+        "duration_min": 240.0,
+        "reduction_kw": 1000.0,
+    }
+    assert api.reduction_event_valid(event) is True
+
+
+@pytest.mark.parametrize("cleared_key", sorted(api.REDUCTION_EVENT_KEYS))
+def test_an_empty_field_is_absent_never_zero(cleared_key: str) -> None:
+    """The core of this follow-up's third requirement: a blank box must not become 0
+    -- `reduction_kw: 0.0` is a real, valid event that promises nothing, and building
+    one because the operator cleared a field would be exactly the silent-coercion
+    failure mode this project's own history warns against."""
+    raw = {**RAW_FORM_INPUT, cleared_key: ""}
+    event = api.build_reduction_event_from_input(raw)
+    assert cleared_key not in event
+    assert 0.0 not in event.values()
+    assert 0 not in event.values()
+    # A cleared field makes the whole event incomplete, which reduction_event_valid()
+    # must reject for missing-key reasons -- not accept with a fabricated 0.
+    assert api.reduction_event_valid(event) is False
+
+
+def test_a_whitespace_only_field_is_also_treated_as_empty() -> None:
+    raw = {**RAW_FORM_INPUT, "reduction_kw": "   "}
+    event = api.build_reduction_event_from_input(raw)
+    assert "reduction_kw" not in event
+
+
+def test_a_field_absent_from_the_submission_entirely_is_also_absent_from_the_event() -> None:
+    raw = {k: v for k, v in RAW_FORM_INPUT.items() if k != "duration_min"}
+    event = api.build_reduction_event_from_input(raw)
+    assert "duration_min" not in event
+
+
+@pytest.mark.parametrize("key", ["notice_min", "duration_min", "reduction_kw"])
+def test_a_numeric_string_is_coerced_to_a_real_number(key: str) -> None:
+    """Coercion pinned at the end that FORCES it: a numeric string must become a float,
+    or reduction_event_valid() (which requires a real int/float) would reject every
+    edited field an operator ever types, since a form field is always a string."""
+    event = api.build_reduction_event_from_input({**RAW_FORM_INPUT, key: "42.5"})
+    assert event[key] == 42.5
+    assert isinstance(event[key], float)
+
+
+@pytest.mark.parametrize("key", ["notice_min", "duration_min", "reduction_kw"])
+def test_a_non_numeric_string_is_left_alone_for_the_validator_to_reject(key: str) -> None:
+    """Coercion pinned at the end that AVOIDS it: a string that does not parse as a
+    number must NOT be silently dropped, defaulted, or forced to a number -- it is kept
+    exactly as typed, so `reduction_event_valid()` rejects it for what it is (a string
+    where a number is required), rather than this function guessing or discarding it."""
+    event = api.build_reduction_event_from_input({**RAW_FORM_INPUT, key: "fifteen"})
+    assert event[key] == "fifteen"
+    assert api.reduction_event_valid(event) is False
+
+
+def test_call_t_is_never_parsed_or_reformatted_by_construction() -> None:
+    """call_t travels through as the operator's own string, wire-shaped or not --
+    this function does not decide whether it is a valid timestamp; the validator does."""
+    naive = {**RAW_FORM_INPUT, "call_t": "2026-10-25T16:00:00"}  # no UTC offset
+    event = api.build_reduction_event_from_input(naive)
+    assert event["call_t"] == "2026-10-25T16:00:00"
+    assert api.reduction_event_valid(event) is False  # the validator catches it, not this function
+
+
+def test_an_unknown_field_in_the_submission_is_dropped() -> None:
+    """No stray query parameter, submit-button name, or anything else riding along
+    with a form submission may reach the POST body -- only the four ReductionEvent
+    keys, or fewer, ever come out of this function."""
+    raw = {**RAW_FORM_INPUT, "site_id": "DE-MUC-0001", "submit": "Apply"}
+    event = api.build_reduction_event_from_input(raw)
+    assert set(event.keys()) <= api.REDUCTION_EVENT_KEYS
+    assert "site_id" not in event
+    assert "submit" not in event
+
+
+def test_a_none_value_for_a_field_is_treated_as_absent() -> None:
+    event = api.build_reduction_event_from_input({**RAW_FORM_INPUT, "notice_min": None})
+    assert "notice_min" not in event
+
+
+def test_non_mapping_input_produces_an_empty_event() -> None:
+    assert api.build_reduction_event_from_input(None) == {}
+    assert api.build_reduction_event_from_input("not a mapping") == {}
+    assert api.build_reduction_event_from_input([1, 2, 3, 4]) == {}
+
+
+def test_an_all_empty_submission_produces_an_empty_event_not_a_zeroed_one() -> None:
+    event = api.build_reduction_event_from_input({k: "" for k in api.REDUCTION_EVENT_KEYS})
+    assert event == {}
+    assert api.reduction_event_valid(event) is False

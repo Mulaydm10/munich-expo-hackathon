@@ -81,6 +81,49 @@
     empty body a validating service would reject.
   </p>
   {% endif %}
+
+  {# issue #40 follow-up: "Build a sensible default (...) and let the operator adjust
+     it" is part of the requirement, not colour, and the call screen is exactly where a
+     judge asks "what if the operator wanted 200 kW instead?" -- a hard-coded default
+     answers that with a shrug. This form resubmits (GET, so it only changes what is
+     rendered, never a server-side dispatch) to the SAME page with the four fields as
+     query parameters; the service is expected to read them back into
+     `reduction_event_input` (see api.py's module docstring) and hand them to
+     `api.render()`, which routes them through `build_reduction_event_from_input()` and
+     then the SAME `reduction_event_valid()` call above -- there is no second validator
+     for an edited value. Plain `type="text"` on every field, not `type="number"` on the
+     three numeric ones: a browser silently blanks an invalid `<input type="number">`
+     value on render, which would erase exactly the malformed input an operator needs
+     to see and fix, and would erase it without them touching anything -- a coercion
+     this page does not get to make. No field carries a `name` other than the four
+     `ReductionEvent` keys, and the submit control carries no `name` at all, so nothing
+     but those four keys (or fewer, for a field left blank) can ever reach the
+     query string this form produces. #}
+  <form method="get" class="reduction-event-form" data-testid="reduction-event-form">
+    <p class="form-lede">Adjust the reduction before dispatching:</p>
+    <label>
+      <span>Call time (UTC, ISO-8601)</span>
+      <input type="text" name="call_t" data-testid="input-call_t"
+             value="{{ value_of(reduction_event, 'call_t') if has_value(reduction_event, 'call_t') else '' }}"
+             placeholder="e.g. 2026-10-25T16:00:00+00:00">
+    </label>
+    <label>
+      <span>Notice <span class="unit">min</span></span>
+      <input type="text" inputmode="decimal" name="notice_min" data-testid="input-notice_min"
+             value="{{ value_of(reduction_event, 'notice_min') if has_value(reduction_event, 'notice_min') else '' }}">
+    </label>
+    <label>
+      <span>Duration <span class="unit">min</span></span>
+      <input type="text" inputmode="decimal" name="duration_min" data-testid="input-duration_min"
+             value="{{ value_of(reduction_event, 'duration_min') if has_value(reduction_event, 'duration_min') else '' }}">
+    </label>
+    <label>
+      <span>Reduction <span class="unit">kW</span></span>
+      <input type="text" inputmode="decimal" name="reduction_kw" data-testid="input-reduction_kw"
+             value="{{ value_of(reduction_event, 'reduction_kw') if has_value(reduction_event, 'reduction_kw') else '' }}">
+    </label>
+    <button type="submit" data-testid="reduction-event-apply">Apply</button>
+  </form>
 </section>
 
 {% if dispatch %}
