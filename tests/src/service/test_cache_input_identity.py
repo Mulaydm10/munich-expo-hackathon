@@ -153,3 +153,60 @@ def test_identity_comes_from_the_provenance_sidecar_not_the_parquet_bytes(tmp_pa
     frame.to_parquet(root / "canonical" / "prices.parquet", index=False)  # sidecar untouched
 
     assert cache.inputs_fingerprint(root) == before
+
+
+# ---------------------------------------------------------------------------
+# a document must never be stamped with a fingerprint it was not computed under
+# (Qodo review on PR #61, findings 3 and 5)
+# ---------------------------------------------------------------------------
+
+
+def test_a_table_changing_during_the_build_does_not_get_stamped_as_valid(tmp_path):
+    """The mirror of the defect this PR fixes, and just as silent.
+
+    `pipeline.build` reads the tables, then the document is written. A rebuild landing
+    in that window would stamp the *new* identity onto numbers computed from the *old*
+    tables -- a document that then validates for the rest of its life. Nothing is
+    cached rather than caching a lie.
+    """
+    root = build_root(tmp_path / "root")
+    before = cache.inputs_fingerprint(root)
+
+    write_table(root, "prices", prices_frame(span_index()).iloc[:-4])  # landed mid-build
+
+    assert cache.write("abc123", _doc(), root, expect_fingerprint=before) is None
+    assert cache.read("abc123", root) is None
+    assert not cache.cache_path("abc123", root).exists()
+
+
+def test_a_build_on_unchanged_tables_still_caches(tmp_path):
+    """The other end again: the guard must not refuse every write."""
+    root = build_root(tmp_path / "root")
+    before = cache.inputs_fingerprint(root)
+
+    assert cache.write("abc123", _doc(), root, expect_fingerprint=before) is not None
+    assert cache.read("abc123", root) is not None
+
+
+def test_unreadable_provenance_never_compares_equal_to_itself(tmp_path):
+    """Provenance that cannot be read must not become a reusable identity.
+
+    Collapsing every unreadable sidecar to its exception class gives two *different*
+    unknown states the same fingerprint, so a document written while a sidecar was
+    corrupt validates later while it is still corrupt -- asserting validity exactly
+    where provenance is unknown, which is the one thing this must never do.
+    """
+    root = build_root(tmp_path / "root")
+    (root / "canonical" / "prices.meta.json").write_text("{not json", encoding="utf-8")
+
+    assert cache.inputs_fingerprint(root) != cache.inputs_fingerprint(root)
+
+
+def test_a_scenario_written_while_provenance_is_unreadable_is_never_served(tmp_path):
+    root = build_root(tmp_path / "root")
+    (root / "canonical" / "carbon.meta.json").write_text("{not json", encoding="utf-8")
+
+    cache.write("abc123", _doc(), root)
+    assert cache.read("abc123", root) is None, (
+        "a scenario was served on the strength of provenance nothing could read"
+    )

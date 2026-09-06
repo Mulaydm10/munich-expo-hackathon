@@ -47,9 +47,14 @@ def cache_path(scenario_id: str, root: Path | None = None) -> Path:
 # input identity (issue #48.1)
 # ---------------------------------------------------------------------------
 
-# Every canonical table a scenario can read. Shared with `_pipeline.CANONICAL_TABLES`
-# so the two cannot drift: a table that can change a scenario's numbers must also be
-# able to invalidate that scenario's cache entry.
+# Every canonical table, deliberately a SUPERSET of the five `pipeline.build` reads
+# today (`grid_load` is in the inventory but not currently loaded by a scenario).
+# Fingerprinting it means a `grid_load` rebuild invalidates scenarios whose numbers
+# could not have changed -- a real cost, accepted knowingly, because the two failure
+# directions are not symmetric: over-invalidating is a slow correct answer, and
+# under-invalidating is a fast wrong one with no signal, which is the entire defect
+# this module is fixing. Keeping one tuple shared with `_pipeline.CANONICAL_TABLES`
+# also means a lane that starts reading a table cannot forget to fingerprint it.
 FINGERPRINTED_TABLES = ("sites", "grid_load", "prices", "weather", "balancing", "carbon")
 
 # Top-level key holding the fingerprint of the inputs a cached document was computed
@@ -86,7 +91,13 @@ def inputs_fingerprint(root: Path | None = None) -> str:
         except data.MissingTable:
             identity[table] = None
         except (OSError, ValueError) as exc:  # unreadable/corrupt sidecar
-            identity[table] = f"unreadable: {type(exc).__name__}"
+            # Deliberately unique per call. Collapsing this to the exception class
+            # would give two *different* unknown states one identity, so a document
+            # written while a sidecar was corrupt would validate later while it was
+            # still corrupt -- asserting validity exactly where provenance is unknown.
+            # A never-equal value turns caching off for as long as the sidecar cannot
+            # be read, which is the safe direction: every read misses and recomputes.
+            identity[table] = f"unreadable:{type(exc).__name__}:{uuid.uuid4().hex}"
     blob = json.dumps(identity, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 
@@ -125,10 +136,27 @@ def dumps(doc: dict) -> str:
     return json.dumps(jsonable(doc), sort_keys=True, indent=2, allow_nan=False) + "\n"
 
 
-def write(scenario_id: str, doc: dict, root: Path | None = None) -> Path:
+def write(
+    scenario_id: str,
+    doc: dict,
+    root: Path | None = None,
+    *,
+    expect_fingerprint: str | None = None,
+) -> Path | None:
     """Stamps the inputs' fingerprint into the document as it is written, so a cached
     scenario always states which tables it was computed from (issue #48.1). The
-    caller's dict is not mutated."""
+    caller's dict is not mutated.
+
+    `expect_fingerprint` is the identity the caller *read its inputs under*, captured
+    before the pipeline ran. If the tables have moved since, this writes nothing and
+    returns `None`: the document holds numbers from the previous generation, and
+    stamping it with the current identity would mint exactly the lie this module
+    exists to prevent -- a document that validates forever and was never computed from
+    what it claims. Caching nothing is the safe outcome; the caller still has its
+    result, it simply does not become the answer every later request is given.
+    """
+    if expect_fingerprint is not None and inputs_fingerprint(root) != expect_fingerprint:
+        return None
     path = cache_path(scenario_id, root)
     path.parent.mkdir(parents=True, exist_ok=True)
     stamped = {**doc, INPUTS_KEY: inputs_fingerprint(root)}
@@ -224,8 +252,23 @@ class JobRegistry:
 
         def run() -> None:
             try:
+                # captured before the pipeline reads a single table, so a rebuild
+                # landing mid-run is caught rather than stamped over (PR #61 review)
+                expected = inputs_fingerprint(root)
                 doc = target(progress)
-                write(scenario_id, doc, root)
+                if write(scenario_id, doc, root, expect_fingerprint=expected) is None:
+                    job.error = {
+                        "error": "inputs_changed_during_run",
+                        "detail": (
+                            "a canonical table was rebuilt while this scenario was "
+                            "being computed, so its numbers come from tables that are "
+                            "no longer on disk; nothing was cached"
+                        ),
+                        "how_to_fix": "POST the same spec again to run it against the current tables",
+                    }
+                    job.error_status = 409
+                    job.status = "failed"
+                    return
                 job.progress, job.stage, job.status = 1.0, "done", "done"
             except BaseException as exc:  # noqa: BLE001 - recorded, then re-raised to the poller
                 from ._errors import ServiceError
