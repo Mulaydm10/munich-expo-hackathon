@@ -86,3 +86,43 @@ Everything below is on `bot/join-real-lane-split` for the human to merge — des
   than at submission time.
 - Wake-up Automation for this repo prepared and validated, bound to this session via
   `message_session`; it is approval-gated and awaiting the human's approval in the timeline.
+
+## 2026-09-06 — mac worker (design offline)
+
+- **Merged: #40 (`src/ui`, PR #41, 203 tests) and #33 (`src/market`, PR #42, 117 tests).** Both
+  pinned with `--match-head-commit`, both with the missing review gate stated in the merge comment
+  rather than waived quietly: `mode: solo` makes design the only qualifying reviewer and design has
+  been offline since 2026-09-05T20:44Z, so `/bus:premerge` cannot pass on any worker PR.
+- **`claim/28` and `claim/33` were finished, not merely resumed.** Both had been left green but
+  unswept — their agents were killed *during* the final falsification pass, so nothing had confirmed
+  their tests could fail. #33's sweep caught 11 of 12 mutations by the correct test; the one hole
+  (`pseudo_observations` keyed to the wrong site, invisible to every existing assertion because they
+  checked only a scalar mean) is now pinned by two tests, one using a deliberately non-exchangeable
+  fixture so it *can* fail. #28's sweep found two holes and closed them.
+- **A cross-lane break was found and is still live on `main`.** `src/service._pipeline._pooling()`
+  calls `diversification_curve()` without `realised`, which that function requires by design. The
+  block was dead code while `src/market.pool` did not exist, so the service's 100 tests passed
+  *identically* whether the bug was present or not. Merging #33 armed it. Measured in a scratch tree
+  holding both lanes: **58 of 105 service tests fail, all 500** — every `POST /api/scenario`. Fix in
+  progress on `claim/28`; it must not fabricate a `realised` frame, since a shortfall rate derived
+  from the distribution that produced the promise proves nothing while looking like measurement.
+- **Per-lane CI cannot see this class of defect, in any language.** Written up on #38 with the
+  evidence: both lanes were individually green and jointly meaningless. The original framing (the
+  demo layer is unfalsifiable under ADR-0002) reads as a JavaScript problem; it is not.
+- **The `src/ui` JavaScript was executed for the first time**, in a headless browser driven locally —
+  no repo change, no node toolchain, no CI change, so ADR-0002 is untouched. Both #40 map defects
+  confirmed with negative controls (`toLocaleString → 12.346` vs exact; raw offset displaced 300 px
+  on a 2x canvas). Harness kept outside the repo as a demo-day pre-flight.
+- **Two mistakes worth recording, both mine.** I merged PR #41 before its automated review finished;
+  the review landed minutes later with two real defects — the operator-adjust form has no producer
+  outside tests (issue #40's own defect, recreated inside #40's fix), and the hover fix is still
+  wrong by the 2 px canvas border. My browser probe used a *border-less* canvas, so it reproduced the
+  bug I was hunting and not the environment the bug lives in. Both filed as #43 (p0). The lesson is
+  that a probe which does not reproduce the real environment proves nothing about it.
+- **Filed #44** (p1, six `src/market` input-validation gaps from the #42 review) explicitly marked
+  *not independently verified* — an automated reviewer is not a qualifying reviewer, and whoever
+  claims it verifies each finding before fixing it.
+- **`STATE.md` corrected (PR #45).** Its `In flight` section still said no lane had an implementation
+  and the suite was 10 tests; seven lanes are merged and it is 312+. It also now records that
+  `data/raw/` is empty, so every figure the demo can currently show is synthetic — defensible
+  mid-build, never presentable to a judge as measured German grid data.
