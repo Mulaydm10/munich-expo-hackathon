@@ -117,8 +117,10 @@ def run_scenario(spec: ScenarioSpec, *, root=None, progress=None) -> ScenarioRes
         cache.write(spec.id, built, root)
         _LIVE[spec.id] = live
         # read back rather than returning `built`: the object handed to a caller is then
-        # exactly what every route will serve, byte for byte.
-        doc = cache.read(spec.id, root)
+        # exactly what every route will serve, byte for byte. `verify_inputs=False`
+        # because this process stamped the fingerprint a line ago -- re-deriving it here
+        # would only let a table changing mid-request turn a fresh write into a miss.
+        doc = cache.read(spec.id, root, verify_inputs=False)
     return ScenarioResult.from_doc(doc)
 
 

@@ -8,6 +8,7 @@ re-runs a model.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import threading
@@ -17,6 +18,8 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+
+from src.data import api as data
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -38,6 +41,54 @@ def cache_dir(root: Path | None = None) -> Path:
 
 def cache_path(scenario_id: str, root: Path | None = None) -> Path:
     return cache_dir(root) / f"{scenario_id}.json"
+
+
+# ---------------------------------------------------------------------------
+# input identity (issue #48.1)
+# ---------------------------------------------------------------------------
+
+# Every canonical table a scenario can read. Shared with `_pipeline.CANONICAL_TABLES`
+# so the two cannot drift: a table that can change a scenario's numbers must also be
+# able to invalidate that scenario's cache entry.
+FINGERPRINTED_TABLES = ("sites", "grid_load", "prices", "weather", "balancing", "carbon")
+
+# Top-level key holding the fingerprint of the inputs a cached document was computed
+# from. Deliberately outside `doc["result"]`: it is provenance about the document, not
+# part of the contract's result shape (`ScenarioResult.from_doc` reads only `result`).
+INPUTS_KEY = "inputs_fingerprint"
+
+
+def inputs_fingerprint(root: Path | None = None) -> str:
+    """Short hash of the *identity* of every canonical table a scenario can read.
+
+    `ScenarioSpec.id` hashes the request and nothing else, so it is unchanged when the
+    tables underneath change -- which is exactly what wiring real data does. Without
+    this, every scenario cached during the synthetic era stays warm and keeps serving
+    pre-real numbers with no signal that anything moved (issue #48.1).
+
+    Identity comes from each table's provenance sidecar (`src.data.meta`: source url,
+    licence, `retrieved_at`, row count, resolution, and the raw file's sha256 where the
+    canonicaliser records one), not from the parquet bytes -- reading six sidecars is
+    cheap enough to do on every cache hit, and re-running `canonicalise()` against
+    unchanged raw files is a no-op on provenance, so an unchanged table keeps its
+    fingerprint.
+
+    An absent table is part of the identity too (recorded as `None`): "no `carbon`
+    table" and "a `carbon` table" are different worlds and must not share an answer.
+    An unreadable sidecar is recorded as its error rather than swallowed -- the one
+    thing this must never do is read as "same inputs" when it does not know.
+    """
+    resolved = Path(root) if root is not None else data_root()
+    identity: dict[str, object] = {}
+    for table in FINGERPRINTED_TABLES:
+        try:
+            identity[table] = data.meta(table, root=resolved)
+        except data.MissingTable:
+            identity[table] = None
+        except (OSError, ValueError) as exc:  # unreadable/corrupt sidecar
+            identity[table] = f"unreadable: {type(exc).__name__}"
+    blob = json.dumps(identity, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 
 
 def jsonable(obj):
@@ -75,19 +126,39 @@ def dumps(doc: dict) -> str:
 
 
 def write(scenario_id: str, doc: dict, root: Path | None = None) -> Path:
+    """Stamps the inputs' fingerprint into the document as it is written, so a cached
+    scenario always states which tables it was computed from (issue #48.1). The
+    caller's dict is not mutated."""
     path = cache_path(scenario_id, root)
     path.parent.mkdir(parents=True, exist_ok=True)
+    stamped = {**doc, INPUTS_KEY: inputs_fingerprint(root)}
     tmp = path.with_suffix(f".{uuid.uuid4().hex}.tmp")
-    tmp.write_text(dumps(doc), encoding="utf-8")
+    tmp.write_text(dumps(stamped), encoding="utf-8")
     os.replace(tmp, path)  # atomic: a reader never sees a half-written scenario
     return path
 
 
-def read(scenario_id: str, root: Path | None = None) -> dict | None:
+def read(scenario_id: str, root: Path | None = None, *, verify_inputs: bool = True) -> dict | None:
+    """The cached document, or `None` if there is none *that is still valid*.
+
+    A document whose stored fingerprint does not match the inputs on disk right now is
+    reported as a miss rather than served: the numbers in it were computed from
+    different tables, and the caller's own recompute path is the only thing that can
+    produce an answer for the tables that are actually there. A document written before
+    this key existed carries no fingerprint and is therefore also a miss -- it was
+    computed against inputs nobody recorded, which is precisely the state this guards.
+
+    `verify_inputs=False` is for the read-back immediately after `write`, where the
+    fingerprint was just stamped by this process and re-deriving it would only open a
+    window for a race to turn a fresh write into a miss.
+    """
     path = cache_path(scenario_id, root)
     if not path.exists():
         return None
-    return json.loads(path.read_text(encoding="utf-8"))
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    if verify_inputs and doc.get(INPUTS_KEY) != inputs_fingerprint(root):
+        return None
+    return doc
 
 
 # ---------------------------------------------------------------------------

@@ -33,6 +33,7 @@ from src.grid import api as grid
 from src.market import api as market
 from src.sched import api as sched
 
+from ._cache import FINGERPRINTED_TABLES
 from ._errors import BadSpec, MissingData, UpstreamUnavailable
 from ._spec import ScenarioSpec
 
@@ -45,7 +46,10 @@ LOCAL_TZ = "Europe/Berlin"
 # The canonical tables named in contracts/src/data.md. Listed here (rather than read
 # from src/data, whose SOURCES map only covers wired sources) so /api/health can show a
 # table that does not exist yet as absent rather than omitting it.
-CANONICAL_TABLES = ("sites", "grid_load", "prices", "weather", "balancing", "carbon")
+# One tuple, shared with the cache fingerprint (`_cache.FINGERPRINTED_TABLES`): a table
+# that can change a scenario's numbers must also be able to invalidate its cache entry,
+# and two hand-maintained copies of this list would eventually disagree about which.
+CANONICAL_TABLES = FINGERPRINTED_TABLES
 
 
 # ---------------------------------------------------------------------------
