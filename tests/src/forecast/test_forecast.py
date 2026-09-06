@@ -286,7 +286,8 @@ def test_sharpness_is_mean_width_of_widest_interval():
 
 def test_reliability_curve_shape(trained):
     curve = api.reliability_curve(trained["y_true"], trained["preds"])
-    assert list(curve.columns) == ["tau_nominal", "coverage_empirical"]
+    # issue #11: sharpness rides in the same frame — coverage never travels alone
+    assert list(curve.columns) == ["tau_nominal", "coverage_empirical", "sharpness"]
     assert len(curve) == len(api.QUANTILES)
     assert (curve["coverage_empirical"] >= 0).all() and (curve["coverage_empirical"] <= 1).all()
 
@@ -349,3 +350,139 @@ def test_unsorted_quantiles_are_not_mislabelled():
     # Guard the guard: if the columns were all equal this test would pass
     # for the wrong reason, so require the quantiles to actually separate.
     assert a[cols[0]].mean() < a[cols[-1]].mean()
+
+
+# ==========================================================================
+# Issue #11 — the honesty layer: rolling-origin, calibration against a known
+# truth, coverage paired with sharpness, and degenerate input that raises.
+# ==========================================================================
+
+
+def test_backtest_is_rolling_origin_reconstructed_from_its_output():
+    """The acceptance criterion is deliberately about the OUTPUT: a docstring
+    promising rolling-origin is not evidence. Every training window must end
+    strictly before its own test window begins, and the training window must
+    grow monotonically — that is what distinguishes rolling-origin from a
+    random split that happens to be reported fold-by-fold."""
+    load, weather, prices = _make_synthetic(40, ("s1",), seed=1)
+    target = load[["t", "site_id", "load_kw"]]
+    feats = api.make_features(load, weather, prices, horizon_h=36)
+    table = api.backtest(feats, target, folds=3)
+
+    folds = table.drop_duplicates("fold").sort_values("fold")
+    assert len(folds) == 3
+    for _, row in folds.iterrows():
+        assert row["train_end"] < row["test_start"], (
+            f"fold {row['fold']} trains up to {row['train_end']} but tests from "
+            f"{row['test_start']} — that is not rolling-origin"
+        )
+        assert row["train_start"] <= row["train_end"]
+        assert row["test_start"] <= row["test_end"]
+
+    # the origin actually rolls: each fold trains on strictly more history
+    train_ends = folds["train_end"].tolist()
+    assert train_ends == sorted(train_ends)
+    assert len(set(train_ends)) == len(train_ends)
+    # and no fold's test window overlaps an earlier fold's test window
+    test_starts = folds["test_start"].tolist()
+    assert test_starts == sorted(test_starts)
+
+
+def test_coverage_recovers_tau_on_a_known_distribution():
+    """Verified against a case where the truth is known, not only run on model
+    output. Uniform(0,1) is used precisely because its quantile function is the
+    identity — `q_tau = tau` exactly — so any deviation is the metric's, not an
+    artefact of estimating the quantile we are checking against."""
+    rng = np.random.default_rng(0)
+    y = rng.uniform(0.0, 1.0, size=200_000)
+    for tau in api.QUANTILES:
+        q_pred = np.full(y.shape, tau)  # the exact tau-quantile of U(0,1)
+        assert api.coverage(y, q_pred, tau) == pytest.approx(tau, abs=0.01)
+
+
+def test_over_wide_predictor_gets_good_coverage_and_bad_sharpness(trained):
+    """Coverage alone rewards a model that predicts [0, inf). The pairing is
+    the whole point, so this asserts the failure mode directly: a deliberately
+    absurd predictor scores BETTER on coverage than the real model and far
+    worse on sharpness, and both numbers come back from one call."""
+    y_true = trained["y_true"]
+    real = trained["preds"]
+
+    absurd = real.copy()
+    for tau in api.QUANTILES:
+        col = f"q{int(round(tau * 100)):02d}"
+        absurd[col] = 0.0 if tau < 0.5 else 1e6
+
+    real_curve = api.reliability_curve(y_true, real)
+    absurd_curve = api.reliability_curve(y_true, absurd)
+
+    # the absurd predictor's upper quantiles cover essentially everything
+    absurd_q95 = absurd_curve.loc[absurd_curve["tau_nominal"] == 0.95, "coverage_empirical"].iloc[0]
+    assert absurd_q95 == pytest.approx(1.0, abs=1e-9)
+
+    # ...and it is far less sharp, which is the only thing that exposes it
+    real_sharp = real_curve["sharpness"].iloc[0]
+    absurd_sharp = absurd_curve["sharpness"].iloc[0]
+    assert absurd_sharp > real_sharp * 100
+    assert real_sharp > 0
+
+
+def test_reliability_curve_is_monotone_in_nominal(trained):
+    """Ready for src/ui to plot: rows ordered by nominal level, and empirical
+    coverage non-decreasing — because predict() is monotone across quantiles,
+    a decrease here would mean crossing predictions reached the plot."""
+    curve = api.reliability_curve(trained["y_true"], trained["preds"])
+    assert curve["tau_nominal"].tolist() == sorted(curve["tau_nominal"].tolist())
+    emp = curve["coverage_empirical"].to_numpy()
+    assert np.all(np.diff(emp) >= -1e-12)
+
+
+def test_backtest_reports_coverage_and_sharpness_per_quantile_not_averaged():
+    """Per-quantile, so over-coverage at q95 and under-coverage at q05 cannot
+    cancel into 'calibrated' — and sharpness sits on the same rows, so no
+    caller can read a coverage number out of this table without the width that
+    bought it."""
+    load, weather, prices = _make_synthetic(40, ("s1",), seed=2)
+    target = load[["t", "site_id", "load_kw"]]
+    feats = api.make_features(load, weather, prices, horizon_h=36)
+    table = api.backtest(feats, target, folds=2)
+
+    for col in ("coverage_model", "sharpness_model", "train_start", "test_end"):
+        assert col in table.columns
+
+    # one row per (fold, tau) — nothing averaged away
+    assert len(table) == 2 * len(api.QUANTILES)
+    assert set(table["tau"]) == set(api.QUANTILES)
+    assert (table["coverage_model"] >= 0).all() and (table["coverage_model"] <= 1).all()
+    # sharpness is a property of the fold, constant across its quantile rows
+    for _, grp in table.groupby("fold"):
+        assert grp["sharpness_model"].nunique() == 1
+        assert grp["sharpness_model"].iloc[0] > 0
+
+
+@pytest.mark.parametrize(
+    "y_true, q_pred, match",
+    [
+        ([], [], "empty input"),
+        ([np.nan, np.nan], [1.0, 2.0], "NaN"),
+        ([1.0, 2.0], [np.nan, np.nan], "NaN"),
+        ([1.0], [1.0, 2.0], "same shape"),
+    ],
+)
+def test_degenerate_metric_input_raises_instead_of_a_misleading_number(y_true, q_pred, match):
+    """`np.mean(y <= q)` on an all-NaN column returns 0.0 (every NaN comparison
+    is False) and on an empty array returns NaN. Both read as a calibration
+    verdict rather than as 'you measured nothing'."""
+    with pytest.raises(ValueError, match=match):
+        api.coverage(y_true, q_pred, 0.5)
+    with pytest.raises(ValueError, match=match):
+        api.pinball_loss(y_true, q_pred, 0.5)
+
+
+def test_sharpness_raises_on_empty_and_on_nan_widths():
+    empty = pd.DataFrame({"q05": [], "q95": []})
+    with pytest.raises(ValueError, match="empty preds"):
+        api.sharpness(empty)
+    nan_width = pd.DataFrame({"q05": [1.0, np.nan], "q95": [2.0, 3.0]})
+    with pytest.raises(ValueError, match="NaN interval width"):
+        api.sharpness(nan_width)
