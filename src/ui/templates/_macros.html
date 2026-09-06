@@ -1,0 +1,131 @@
+{# Shared rendering rules for every screen. Centralised here so the provenance and
+   error/warning behaviour that contracts/src/ui.md demands is written once and
+   applied identically everywhere, not re-derived per screen. #}
+
+{% macro screen_body() %}
+{# The single error/success fork every screen goes through. `error` is a top-level
+   context key shaped like contracts/src/service.md's `{error, detail, how_to_fix}` --
+   when present, render the failure state and NOTHING else on this screen: an error
+   banner sitting next to a chart that reads "0 kW" is exactly the failure mode
+   "zero and unknown must never look the same" exists to rule out, so a failed
+   fetch never falls through to the normal body. #}
+{% if error %}
+<div class="banner banner-error" role="alert" data-testid="error-banner">
+  <p class="banner-kicker">DATA UNAVAILABLE — not zero, unknown</p>
+  <p class="banner-error-code" data-testid="error-code">{{ error.error }}</p>
+  <p data-testid="error-detail">{{ error.detail }}</p>
+  <p data-testid="error-how-to-fix"><strong>How to fix:</strong> {{ error.how_to_fix }}</p>
+</div>
+{% else %}
+{{ caller() }}
+{% endif %}
+{% endmacro %}
+
+
+{% macro warnings_list(warnings) %}
+{# contracts/CONVENTIONS.md: "any coercion is observable"; contracts/src/ui.md:
+   "warnings[] is rendered, not swallowed". Rendered unconditionally whenever the list
+   is non-empty -- never behind a click, never summarised away. Each entry may be a
+   plain string (older/simple shape) or a structured object; the exact per-item shape
+   of a src/service warning is not pinned down by contracts/src/service.md beyond
+   "warnings[]" existing, so both are handled -- see the PR notes on this ambiguity. #}
+{% if warnings %}
+<section class="warnings" data-testid="warnings" aria-label="Data-quality warnings">
+  <h2>Warnings — {{ warnings | length }}</h2>
+  <ul>
+    {% for w in warnings %}
+    {% if w is mapping %}
+    <li class="warning-item" data-testid="warning-item">
+      <span class="warning-code">{{ w.code if w.code is defined else "warning" }}</span>
+      <span class="warning-message">{{ w.message if w.message is defined else w }}</span>
+      {% if w.value is defined and w.value is not none %}
+      <span class="warning-value">{{ "%.4g"|format(w.value) }}{% if w.unit is defined and w.unit %} {{ w.unit }}{% elif w.code is defined %} {{ w.code | unit_for_key }}{% endif %}</span>
+      {% endif %}
+    </li>
+    {% else %}
+    <li class="warning-item" data-testid="warning-item">
+      <span class="warning-message">{{ w }}</span>
+    </li>
+    {% endif %}
+    {% endfor %}
+  </ul>
+</section>
+{% else %}
+<p class="warnings-empty" data-testid="warnings-empty">No warnings reported for this scenario.</p>
+{% endif %}
+{% endmacro %}
+
+
+{% macro provenance_tag(source) %}
+{# One inline tag, used next to every figure that has a `source` string travelling
+   with it. "(assumed)" only appears when the source actually says ASSUMED --
+   otherwise the source text itself is shown, so a real citation is never relabelled
+   as a guess and a guess is never shown bare. #}
+{% if source %}
+<span class="provenance {{ 'provenance-assumed' if source | is_assumed else 'provenance-sourced' }}" title="{{ source }}">
+  {% if source | is_assumed %}(assumed){% else %}(source: {{ source | truncate(40) }}){% endif %}
+</span>
+{% else %}
+<span class="provenance provenance-missing" data-testid="provenance-missing" title="src/service does not provide a source for this figure">(source not provided by API)</span>
+{% endif %}
+{% endmacro %}
+
+
+{% macro penalty_multiplier_line(value, source) %}
+{# The one figure the issue calls out by name: never a bare "3.0", always the sentence
+   that says what it means and that it is invented. #}
+{% if value is none %}
+<p class="figure figure-missing" data-testid="penalty-multiplier-missing">Penalty multiplier: not provided by API.</p>
+{% else %}
+<p class="figure" data-testid="penalty-multiplier">
+  Non-delivery penalty: at <strong>{{ "%g"|format(value) }}×</strong> the energy price
+  {% if source | is_assumed %}<strong>(assumed)</strong>{% endif %}
+  {{ provenance_tag(source) }}
+</p>
+{% endif %}
+{% endmacro %}
+
+
+{% macro peakers_displaced_line(count, assumption) %}
+{# The loudest guess in the project. The count never appears without the capacity
+   figure it was divided by, and that figure never appears without its source. #}
+{% if count is none or assumption is none %}
+<p class="figure figure-missing" data-testid="peakers-displaced-missing">Peaker plants displaced: not provided by API.</p>
+{% else %}
+<p class="figure figure-headline" data-testid="peakers-displaced">
+  ≈ <strong>{{ "%.1f"|format(count) }}</strong> peaker plants displaced
+  <span class="figure-basis">(assuming {{ "%g"|format(assumption.value) }} {{ assumption.unit }} per plant {{ provenance_tag(assumption.source) }})</span>
+</p>
+{% endif %}
+{% endmacro %}
+
+
+{% macro assumed_field(label, value, unit, source) %}
+{# Generic "labelled number + provenance" row, for product parameters
+   (min_bid_kw, block_length_min, notice_period_min, ...) and anything else that
+   carries an Assumption/Product-style `source`. #}
+<tr class="assumed-field" data-testid="assumed-field-{{ label | lower | replace(' ', '-') }}">
+  <th scope="row">{{ label }}</th>
+  <td>{% if value is none %}<span data-testid="value-missing">not provided by API</span>{% else %}{{ value }}{% if unit %} {{ unit }}{% endif %}{% endif %}</td>
+  <td>{{ provenance_tag(source) }}</td>
+</tr>
+{% endmacro %}
+
+
+{% macro figure_row(label, key, value) %}
+{# Any field whose unit we infer from its wire-name suffix (contracts/CONVENTIONS.md)
+   rather than one this lane has bespoke rendering for -- used for fields the frozen
+   service contract mentions in prose but does not pin down precisely (see PR notes),
+   so an unexpected-but-present field still renders with a unit rather than being
+   dropped on the floor. #}
+<tr>
+  <th scope="row">{{ label }}</th>
+  <td>
+    {% if value is none %}
+    <span data-testid="value-missing">unknown</span>
+    {% else %}
+    {{ value }}{% set u = key | unit_for_key %}{% if u %} {{ u }}{% endif %}
+    {% endif %}
+  </td>
+</tr>
+{% endmacro %}
