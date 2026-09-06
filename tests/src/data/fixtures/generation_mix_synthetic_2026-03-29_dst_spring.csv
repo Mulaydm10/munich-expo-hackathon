@@ -1,0 +1,5 @@
+# SYNTHETIC FIXTURE - authored for FlexGrid issue #8, not a real SMARD download.
+# Spring-forward day: local 02:00 hour does not exist.
+Datum von;Datum bis;Braunkohle [MWh];Steinkohle [MWh];Erdgas [MWh];Kernenergie [MWh];Wind [MWh];Photovoltaik [MWh]
+29.03.2026 01:00;29.03.2026 02:00;25,00;12,00;10,00;0,00;20,00;0,00
+29.03.2026 03:00;29.03.2026 04:00;24,00;11,00;9,00;0,00;22,00;0,00

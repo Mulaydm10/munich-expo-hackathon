@@ -1,0 +1,8 @@
+# SYNTHETIC FIXTURE - authored for FlexGrid issue #8, not a real SMARD download.
+# Ordinary (non-DST) day. Row for 10:30-10:45 deliberately omitted (punched hole)
+# to test that a source gap surfaces as a missing row, never a zero-filled one.
+Datum von;Datum bis;Netzlast [MWh];Wind [MWh];Photovoltaik [MWh]
+15.03.2026 10:00;15.03.2026 10:15;250,00;40,00;0,00
+15.03.2026 10:15;15.03.2026 10:30;248,00;42,00;0,00
+15.03.2026 10:45;15.03.2026 11:00;245,00;44,00;0,00
+15.03.2026 11:00;15.03.2026 11:15;243,00;46,00;5,00

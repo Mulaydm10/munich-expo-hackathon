@@ -1,0 +1,7 @@
+# SYNTHETIC FIXTURE - authored for FlexGrid issue #8, not a real SMARD download.
+# Day-ahead prices are native hourly; spring-forward day has no "02:00" hour.
+Datum von;Datum bis;Day-Ahead Preis [EUR/MWh]
+29.03.2026 00:00;29.03.2026 01:00;40,00
+29.03.2026 01:00;29.03.2026 02:00;38,00
+29.03.2026 03:00;29.03.2026 04:00;35,00
+29.03.2026 04:00;29.03.2026 05:00;33,00
