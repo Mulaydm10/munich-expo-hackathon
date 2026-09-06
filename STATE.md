@@ -6,7 +6,7 @@ disagree about what is true *now*, **STATE wins** — the worklog only explains 
 Note for bus workers: this is the *project* snapshot. The bus's lane/claim state lives in
 `docs/STATE.md` and is written only under the `claim/state` lock. Two different files, on purpose.
 
-Last updated: 2026-09-05 (design node session, post-merge)
+Last updated: 2026-09-06 (mac worker session; design node offline since 2026-09-05T20:44Z)
 
 ## Deadline + time remaining
 **Sun 20 Sep 2026, 17:00 Europe/Berlin (CEST)** — working assumption. A second official source
@@ -27,14 +27,26 @@ earlier one. See `COMPETITION.md`; do not restate the date anywhere else.
   lane issues are claimable and the pinned Board is #16.
 
 ## In flight
-- Eight `status:queued` lane issues, none claimed yet: #7/#8 (`src/data`), #9 (`src/fleet`),
-  #10/#11 (`src/forecast`), #12 (`src/grid`), #14 (`src/market`), #15 (`src/sched`). Start pair is
-  #7 + #9 — independent, and everything downstream consumes their outputs.
-- No lane has an implementation yet: every `src/<lane>/api.py` is a stub and each
-  `tests/src/<lane>/` holds one placeholder, so `python3 -m pytest tests -q` (10 passed) proves the
-  harness and nothing about the thesis.
+- **Seven lanes are implemented and merged**, not zero: `src/data` (sites only), `src/fleet`,
+  `src/forecast`, `src/grid`, `src/market` (base), `src/sched`, `src/ui`. `main` is at `46c7bbf`
+  and `pytest tests -q` is **312 passed** (verified 2026-09-06). The line that used to sit here —
+  "no lane has an implementation yet … 10 passed" — was written before any lane landed and was
+  badly stale; treat this section, not the worklog, as current.
+- **Two lanes are pushed but deliberately unmerged**, because their agents were killed by a
+  session limit *during their final falsification sweep*: `claim/28` (`src/service`, 100 tests)
+  and `claim/33` (`src/market` pooling, 115 tests). Both suites are green. Green was not the
+  question — nothing had yet confirmed those tests can go red. The sweeps are being finished now;
+  no PR is open until they are. Both branch from before the `src/ui` merges, so `git diff
+  main..HEAD` appears to delete `src/ui`. It does not. **Do not rebase to "fix" that diff.**
+- `src/ui` #40 is in flight: the call screen's dispatch button is gated on a `reduction_event`
+  context key that **nothing in production produces** — the only supplier in the repo is a test
+  fixture. 135 green tests over a permanently dead button, on the one demo screen that shows the
+  product delivering flexibility. Being fixed on `claim/40`.
+- Not started: `src/data` #8 (the time-series sources + both DST transitions). Queued p2/p1:
+  #29, #35, #11, and #31 (`src/voice`, blocked on #28).
 
 ## Blocked
+
 - `Q-0003` (exact deadline) and `Q-0004` (solo vs 2–6 team) need an organizer answer. No organizer
   contact may be made without the Main Agent's explicit authorization.
 - Organizers' sample charging dataset is only handed out at the on-site briefing (`Q-0007`). Nothing
@@ -45,13 +57,23 @@ earlier one. See `COMPETITION.md`; do not restate the date anywhere else.
   to submit does.
 
 ## Next intended step
-Workers take #7 and #9; design reviews and keeps the queue ≥2 deep per active lane. First runnable
-end-to-end target is a single Munich site for one historical date: real prices + real registry entry
-→ synthetic sessions → quantile forecast → envelope → schedule → euros. `DEMO.md` gets its first
-`DEMO-0001` scenario the moment that runs.
+1. Finish the falsification sweeps on `claim/28` and `claim/33`, then merge both. Everything
+   downstream of them is blocked: `src/service` owns the FastAPI app, so **on `main` today there is
+   no runnable application at all** — `src/ui` is templates and static files only.
+2. `src/ui` #40 (dead dispatch button) — in flight.
+3. `DEMO.md` still has **no scenario** and still says "no build yet". It cannot get one until #28
+   merges, for the reason in 1. Write `DEMO-0001` and *actually run it* before marking it Ready.
+4. `src/data` #8, then the p2 queue.
+
+**A fact worth knowing before writing the demo:** `data/raw/` is **empty** — there is no real
+SMARD/DWD/registry data in this repo, only a single charge-point excerpt fixture
+(`tests/src/data/fixtures/ladesaeulenregister_excerpt.csv`). Every number the demo shows will come
+from authored fixtures or synthetic sessions until #8 lands real series. That is defensible for a
+build in progress, but it must never be *presented* to a judge as measured German grid data, and
+`DEMO-0001` should say which numbers are synthetic.
 
 Human-only, still outstanding: read the two LOCKED files (#5 landed without your sign-off), decide
-`Q-0003`/`Q-0004`, and merge — design does not call the merge endpoint.
+`Q-0003`/`Q-0004`, and act on `Q-0008` (no ticket held — this one can lose the submission outright).
 
 ## Latest experiment
 - (none yet — see `experiments/experiment_log.md`)
