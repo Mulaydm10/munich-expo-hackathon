@@ -1,0 +1,9 @@
+# SYNTHETIC FIXTURE - authored for FlexGrid issue #8, not a real SMARD download.
+# Generation-by-fuel-type mix; src.data.api derives carbon intensity from this
+# plus published per-fuel emission factors (see CARBON_INTENSITY_FACTORS in
+# src/data/api.py), rather than from an ENTSO-E API key we do not have.
+Datum von;Datum bis;Braunkohle [MWh];Steinkohle [MWh];Erdgas [MWh];Kernenergie [MWh];Wind [MWh];Photovoltaik [MWh]
+15.06.2026 12:00;15.06.2026 13:00;20,00;10,00;15,00;0,00;30,00;40,00
+15.06.2026 13:00;15.06.2026 14:00;18,00;9,00;14,00;0,00;32,00;42,00
+15.06.2026 14:00;15.06.2026 15:00;16,00;8,00;13,00;0,00;34,00;38,00
+15.06.2026 15:00;15.06.2026 16:00;15,00;7,00;12,00;0,00;36,00;35,00

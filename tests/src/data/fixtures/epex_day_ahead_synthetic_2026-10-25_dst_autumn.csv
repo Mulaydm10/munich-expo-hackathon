@@ -1,0 +1,11 @@
+# SYNTHETIC FIXTURE - authored for FlexGrid issue #8, not a real SMARD download.
+# Fall-back day: the "02:00" hour occurs twice. Both instances carry negative
+# prices here on purpose -- negative day-ahead prices are real and must
+# survive ingest with their sign intact.
+Datum von;Datum bis;Day-Ahead Preis [EUR/MWh]
+25.10.2026 00:00;25.10.2026 01:00;45,00
+25.10.2026 01:00;25.10.2026 02:00;30,00
+25.10.2026 02:00;25.10.2026 03:00;-12,50
+25.10.2026 02:00;25.10.2026 03:00;-8,25
+25.10.2026 03:00;25.10.2026 04:00;20,00
+25.10.2026 04:00;25.10.2026 05:00;25,00

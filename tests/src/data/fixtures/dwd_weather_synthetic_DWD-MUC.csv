@@ -1,0 +1,8 @@
+# SYNTHETIC FIXTURE - authored for FlexGrid issue #8, not a real DWD download.
+station_id;datetime_utc;temp_c;wind_ms;ghi_w_m2
+DWD-MUC;2026061500;9.0;1.5;0.0
+DWD-MUC;2026061501;8.5;1.4;0.0
+DWD-MUC;2026061502;8.2;1.3;0.0
+DWD-MUC;2026061503;8.0;1.2;0.0
+DWD-MUC;2026061504;8.6;1.0;40.0
+DWD-MUC;2026061505;9.8;0.9;120.0

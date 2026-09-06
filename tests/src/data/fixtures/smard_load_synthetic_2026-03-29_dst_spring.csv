@@ -1,0 +1,13 @@
+# SYNTHETIC FIXTURE - authored for FlexGrid issue #8, not a real SMARD download.
+# Spring-forward day: Europe/Berlin clocks jump 02:00 CET -> 03:00 CEST, so
+# local wall-clock times 02:00-02:45 never occur. The real export has no rows
+# for them; this fixture mirrors that (rows go straight from 01:45 to 03:00).
+Datum von;Datum bis;Netzlast [MWh];Wind [MWh];Photovoltaik [MWh]
+29.03.2026 01:00;29.03.2026 01:15;300,00;50,00;0,00
+29.03.2026 01:15;29.03.2026 01:30;295,00;52,50;0,00
+29.03.2026 01:30;29.03.2026 01:45;290,00;55,00;0,00
+29.03.2026 01:45;29.03.2026 02:00;285,00;57,50;0,00
+29.03.2026 03:00;29.03.2026 03:15;280,00;60,00;0,00
+29.03.2026 03:15;29.03.2026 03:30;275,00;62,50;0,00
+29.03.2026 03:30;29.03.2026 03:45;270,00;65,00;0,00
+29.03.2026 03:45;29.03.2026 04:00;265,00;67,50;2,50
