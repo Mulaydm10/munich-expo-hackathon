@@ -61,6 +61,29 @@ is checked for NaN up front and rejected with `ValueError` naming the column
 and lane. A scheduler that silently treated an unknown envelope value as "no
 limit" or "zero" would either overload a transformer or manufacture a fake
 deadline miss — neither is this lane's call to make quietly.
+
+Empty-input paths get the same treatment, not an exemption (issue #27 finding
+6): a site whose LP has zero variables (no session window intersects the
+envelope grid) is not "nothing to check" — a live floor commitment over that
+site's times still cannot be met by zero power, so `_solve_lp`'s `n == 0`
+branch checks the floor before ever reporting success.
+
+## No numerical-clip coercion metric (issue #27 finding 9)
+An earlier version of this module clipped each LP variable into its `[0,
+max_power_kw]` bound whenever HiGHS returned a value outside it by less than
+`1e-4` (raising past that), and counted how often the clip actually moved a
+value as `.attrs['numerical_clip_count']`. That counter was observed at zero
+on every fixture this lane has, which makes it unfalsified, not verified
+(`contracts/CONVENTIONS.md`: a coercion must be pinned at both ends — a
+fixture that forces it and one that avoids it). Forcing HiGHS off its own
+bound just to give the counter something to report would be manufacturing a
+defect to measure it, so the coercion is removed instead: a bounded HiGHS
+result outside `[0, max_power_kw]` by more than solver noise is now always a
+hard `RuntimeError` naming the session and interval, never a silent clip —
+the band between `_TOL` (1e-6) and the old 1e-4 threshold was never
+physically meaningful, only a margin for the clip to hide in. There is
+nothing left to coerce, so nothing to measure: no returned frame carries
+`numerical_clip_count` or `numerical_clip_total_vars` any more.
 """
 
 from __future__ import annotations
@@ -294,6 +317,17 @@ def _solve_lp(problem: _SiteProblem, *, include_envelope: bool = True,
             var_index[(sid, t)] = len(var_index)
     n = len(var_index)
     if n == 0:
+        # No session window intersects this site's envelope grid, so there is zero
+        # power available to draw on -- that is only actually feasible if nothing here
+        # requires positive load. A live floor commitment does (see issue #27 finding
+        # 6 / the module docstring's empty-input note): with `include_floor=True` and
+        # any interval demanding reduction_kw > 0, this is infeasible and must say so
+        # by returning None, not by reporting success while holding none of the floor.
+        # `include_floor=False` callers are explicitly asking "ignoring the floor,
+        # would this be feasible?" -- with no variables at all the envelope can never
+        # be exceeded either, so that question is trivially yes.
+        if include_floor and any(problem.floor_at(t) > _TOL for t in problem.times):
+            return None
         return pd.DataFrame(columns=["t", "session_id", "power_kw"])
 
     c = np.zeros(n)
@@ -353,26 +387,20 @@ def _solve_lp(problem: _SiteProblem, *, include_envelope: bool = True,
     if not res.success:
         return None
 
-    numerical_clip_count = 0
     records = []
     for (sid, t), i in var_index.items():
         raw = float(res.x[i])
         lo, hi = 0.0, problem.max_power[sid]
         if raw < lo - 1e-4 or raw > hi + 1e-4:
-            # a real violation, not solver noise -- do not silently clip it away.
+            # a real violation, not solver noise -- never coerced away (see the module
+            # docstring's "no numerical-clip coercion metric" note / issue #27 finding 9).
             raise RuntimeError(
                 f"src.sched: LP returned power_kw={raw:.6f} for session {sid!r} at t={t}, "
                 f"outside its [0, {hi}] bound by more than solver noise -- solver bug or "
                 f"numerical failure, not something to clip past."
             )
-        clipped = min(max(raw, 0.0), hi)
-        if clipped != raw:
-            numerical_clip_count += 1
-        records.append((t, sid, clipped))
-    df = pd.DataFrame(records, columns=["t", "session_id", "power_kw"])
-    df.attrs["numerical_clip_count"] = numerical_clip_count
-    df.attrs["numerical_clip_total_vars"] = n
-    return df
+        records.append((t, sid, raw))
+    return pd.DataFrame(records, columns=["t", "session_id", "power_kw"])
 
 
 def _solve_site_lp(problem: _SiteProblem) -> pd.DataFrame:
@@ -550,10 +578,7 @@ def _solve_site_greedy(problem: _SiteProblem) -> pd.DataFrame:
     for sid, window in problem.windows.items():
         for t in window:
             dense.append((t, sid, assigned.get((sid, t), 0.0)))
-    df = pd.DataFrame(dense, columns=["t", "session_id", "power_kw"])
-    df.attrs["numerical_clip_count"] = 0
-    df.attrs["numerical_clip_total_vars"] = len(dense)
-    return df
+    return pd.DataFrame(dense, columns=["t", "session_id", "power_kw"])
 
 
 # ---------------------------------------------------------------------------
@@ -568,10 +593,16 @@ def _solve_all_sites(
     commitments: Sequence[Commitment],
     solver: Literal["lp", "greedy"],
 ) -> pd.DataFrame:
+    # issue #27 finding 7: `Literal["lp", "greedy"]` is a type-checker hint, not a
+    # runtime check -- an unrecognised string (a capitalisation typo, say) must not
+    # silently fall through to greedy and produce a valid-looking schedule from the
+    # wrong solver.
+    if solver not in ("lp", "greedy"):
+        raise ValueError(
+            f"src.sched: unknown solver {solver!r}; expected 'lp' or 'greedy'"
+        )
     solve_fn = _solve_site_lp if solver == "lp" else _solve_site_greedy
     frames = []
-    total_clips = 0
-    total_vars = 0
     for site_id in sorted(sessions["site_id"].unique()):
         site_sessions = sessions[sessions["site_id"] == site_id]
         site_envelope = envelope[envelope["site_id"] == site_id]
@@ -580,14 +611,9 @@ def _solve_all_sites(
         problem = _SiteProblem(site_id, site_sessions, site_envelope, prices, commitments)
         site_df = solve_fn(problem)
         site_df.insert(1, "site_id", site_id)
-        total_clips += site_df.attrs.get("numerical_clip_count", 0)
-        total_vars += site_df.attrs.get("numerical_clip_total_vars", 0)
         frames.append(site_df)
     out = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=_SCHEDULE_COLUMNS)
-    out = out[_SCHEDULE_COLUMNS].sort_values(["site_id", "t", "session_id"]).reset_index(drop=True)
-    out.attrs["numerical_clip_count"] = total_clips
-    out.attrs["numerical_clip_total_vars"] = total_vars
-    return out
+    return out[_SCHEDULE_COLUMNS].sort_values(["site_id", "t", "session_id"]).reset_index(drop=True)
 
 
 # ---------------------------------------------------------------------------
@@ -619,6 +645,10 @@ def schedule(
     _reject_nan(envelope, ["max_kw"], "envelope")
     _reject_nan(prices, ["price_eur_mwh"], "prices")
     _reject_nan_commitments(commitments)
+    if solver not in ("lp", "greedy"):
+        raise ValueError(
+            f"src.sched: unknown solver {solver!r}; expected 'lp' or 'greedy'"
+        )
     if sessions.empty:
         out = pd.DataFrame(columns=_SCHEDULE_COLUMNS)
         out.attrs.update(sessions=sessions, envelope=envelope, prices=prices,
@@ -632,6 +662,35 @@ def schedule(
     out.attrs["commitments"] = tuple(commitments)
     out.attrs["solver"] = solver
     return out
+
+
+def _floor_shortfall_kw_min(
+    envelope: pd.DataFrame, commitments: Sequence[Commitment], totals: pd.Series
+) -> float:
+    """kW*min of floor shortfall, evaluated over every (site_id, t) the envelope
+    defines -- not just the ones present in the schedule (issue #27 finding 2). A
+    (site, t) with a live commitment but no matching schedule row delivered zero, not
+    "no obligation": `totals` (a Series indexed by (site_id, t) -> total_kw, built by
+    the caller from whatever the schedule actually has, possibly empty) is looked up
+    with a 0.0 default rather than skipped.
+    """
+    if not commitments or envelope.empty:
+        return 0.0
+    env = envelope.copy()
+    env["t"] = _as_utc(env["t"])
+    site_dt: dict[str, pd.Series] = {}
+    for site_id, grp in env.groupby("site_id"):
+        site_dt[site_id] = _infer_interval_hours(grp["t"])
+    shortfall = 0.0
+    for row in env.itertuples(index=False):
+        applicable = [c.reduction_kw for c in commitments if c.t_start <= row.t < c.t_end]
+        if not applicable:
+            continue
+        req = max(applicable)
+        total_kw = float(totals.get((row.site_id, row.t), 0.0))
+        dt_h = float(site_dt[row.site_id].loc[row.t])
+        shortfall += max(0.0, req - total_kw) * dt_h * 60.0
+    return shortfall
 
 
 def evaluate(
@@ -663,12 +722,16 @@ def evaluate(
 
     if sched.empty:
         due_total = float(sessions["energy_kwh"].sum())
+        # issue #27 finding 2: an empty schedule delivers zero everywhere, which is a
+        # full floor shortfall wherever a commitment is live -- not the "nothing to
+        # audit" that a hard-coded 0.0 here used to report.
+        empty_totals = pd.Series(dtype=float)
         return {
             "energy_cost_eur": 0.0,
             "unmet_kwh": due_total,
             "deadline_misses": int((sessions["energy_kwh"] > _TOL).sum()),
             "envelope_violation_kwh": 0.0,
-            "floor_shortfall_kw_min": 0.0,
+            "floor_shortfall_kw_min": _floor_shortfall_kw_min(envelope, commitments, empty_totals),
             "peak_kw": 0.0,
         }
 
@@ -693,7 +756,30 @@ def evaluate(
     sched["dt_h"] = dt_vals
     sched["row_energy_kwh"] = sched["power_kw"] * sched["dt_h"]
 
-    delivered = sched.groupby("session_id")["row_energy_kwh"].sum()
+    # issue #27 finding 1: only energy delivered at the right site, within the
+    # session's own [t_arrive, deadline_t) window, counts toward meeting its deadline.
+    # `delivered = sched.groupby("session_id")[...]` used to join on session_id alone,
+    # so a hand-built schedule crediting a session's energy at the wrong site, before
+    # it arrived, or after its deadline read as a met deadline. Invalid rows are
+    # excluded here (surfaced as unmet energy / a deadline miss), never silently
+    # banked -- this is the check that would have caught findings 3-5 of #27 on its
+    # own, which is why `evaluate()` is fixed before any of dispatch()'s reporting.
+    sess = sessions.set_index("session_id")
+    sess_site = sess["site_id"]
+    sess_arrive = _as_utc(sess["t_arrive"])
+    sess_deadline = _as_utc(sess["deadline_t"])
+    row_site = sched["session_id"].map(sess_site)
+    row_arrive = sched["session_id"].map(sess_arrive)
+    row_deadline = sched["session_id"].map(sess_deadline)
+    valid_row = (
+        sched["session_id"].isin(sess.index)
+        & (sched["site_id"] == row_site)
+        & (sched["t"] >= row_arrive)
+        & (sched["t"] < row_deadline)
+    )
+    sched["valid_row_energy_kwh"] = np.where(valid_row, sched["row_energy_kwh"], 0.0)
+
+    delivered = sched.groupby("session_id")["valid_row_energy_kwh"].sum()
     due = sessions.set_index("session_id")["energy_kwh"]
     unmet_per_session = (due - delivered.reindex(due.index).fillna(0.0)).clip(lower=0.0)
     unmet_kwh = float(unmet_per_session.sum())
@@ -715,12 +801,12 @@ def evaluate(
     over = (merged["total_kw"] - merged["max_kw"]).clip(lower=0.0)
     envelope_violation_kwh = float((over * merged["dt_h"]).sum())
 
-    floor_shortfall_kw_min = 0.0
-    for c in commitments:
-        window = merged[(merged["t"] >= c.t_start) & (merged["t"] < c.t_end)]
-        for row in window.itertuples(index=False):
-            shortfall_kw = max(0.0, c.reduction_kw - row.total_kw)
-            floor_shortfall_kw_min += shortfall_kw * row.dt_h * 60.0
+    # issue #27 finding 2: build the audit grid from the envelope (every site x
+    # committed timestamp), not from `merged` (only (site, t) pairs the schedule
+    # actually used) -- a site/interval the schedule is silent on delivered zero, which
+    # is a real shortfall against a live floor, not "no obligation".
+    totals_by_site_t = site_totals.set_index(["site_id", "t"])["total_kw"]
+    floor_shortfall_kw_min = _floor_shortfall_kw_min(envelope, commitments, totals_by_site_t)
 
     pr = prices.copy()
     pr["t"] = _as_utc(pr["t"])
@@ -809,16 +895,75 @@ def baseline(sessions: pd.DataFrame, *, policy: Literal["asap", "even"] = "asap"
     return df
 
 
+def _release_floor_over_window(
+    commitments: Sequence[Commitment], start: pd.Timestamp, end: pd.Timestamp
+) -> tuple[Commitment, ...]:
+    """`commitments` with `[start, end)` carved out of every one of them (issue #27
+    finding 1). The floor exists to guarantee load is *present* so it can be dropped
+    when the grid operator calls; once the call arrives, the promise is being
+    *delivered* over that window, not held, so enforcing it there as well as the
+    temporarily tightened envelope just makes the two constraints fight -- and the
+    floor always wins, since `dispatch()` never sacrifices a hard constraint. A
+    commitment that straddles a boundary becomes up to two pieces with the same
+    `reduction_kw`; one that falls entirely inside `[start, end)` disappears; one
+    entirely outside it is untouched.
+    """
+    released: list[Commitment] = []
+    for c in commitments:
+        if c.t_end <= start or c.t_start >= end:
+            released.append(c)
+            continue
+        if c.t_start < start:
+            released.append(Commitment(c.t_start, start, c.reduction_kw))
+        if c.t_end > end:
+            released.append(Commitment(end, c.t_end, c.reduction_kw))
+    return tuple(released)
+
+
+def _measure_window_shed_kw(
+    before_totals: pd.Series, after_df: pd.DataFrame, envelope: pd.DataFrame,
+    window_start: pd.Timestamp, window_end: pd.Timestamp,
+) -> float:
+    """Actual kW shed over `[window_start, window_end)`, measured directly by diffing
+    the committed schedule's totals against the amended one (issue #27 finding 4) --
+    never inferred from the envelope-tightening fraction used to search for it, which
+    keeps reporting "success" even once the site has no more load left to shed and so
+    silently overstates delivery. Returns the minimum per-(site, t) reduction across
+    the window, since a per-interval firm promise is only as good as its worst
+    interval; 0.0 if the window contains no envelope timestamps.
+    """
+    after_totals = (
+        after_df.groupby(["site_id", "t"])["power_kw"].sum() if len(after_df) else pd.Series(dtype=float)
+    )
+    env = envelope.copy()
+    env["t"] = _as_utc(env["t"])
+    reductions = []
+    for row in env[["site_id", "t"]].drop_duplicates().itertuples(index=False):
+        if not (window_start <= row.t < window_end):
+            continue
+        before = float(before_totals.get((row.site_id, row.t), 0.0))
+        after = float(after_totals.get((row.site_id, row.t), 0.0))
+        reductions.append(before - after)
+    return min(reductions) if reductions else 0.0
+
+
 def dispatch(schedule: pd.DataFrame, event: ReductionEvent) -> pd.DataFrame:
     """Grid operator calls mid-window: curtail to deliver `event.reduction_kw` within
     the notice period, then recover the deferred energy before every deadline. Returns
     the amended schedule (same columns as `schedule()`).
 
-    Never both accepts the call and misses a deadline: re-solves the site(s) with the
-    compliance window's envelope temporarily tightened by the requested reduction, and
-    if that is not fully feasible without a deadline miss, bisects down to the largest
-    reduction that is. The achieved amount and shortfall are recorded on the returned
-    frame's `.attrs['reduction_kw_achieved']` / `.attrs['reduction_shortfall_kw']`.
+    Never both accepts the call and misses a deadline: re-solves the site(s) from
+    `event.call_t` forward (time before it is frozen to the committed schedule's
+    realised power -- see issue #27 finding 5 and `_release_floor_over_window`'s note
+    on finding 1) with the compliance window's envelope temporarily tightened by the
+    requested reduction and the sold floor released over that same window, and if that
+    is not fully feasible without a deadline miss, bisects down to the largest
+    reduction that is. The achieved amount and shortfall recorded on the returned
+    frame's `.attrs['reduction_kw_achieved']` / `.attrs['reduction_shortfall_kw']` are
+    *measured* directly from the amended schedule (issue #27 finding 4), never the
+    envelope-tightening fraction used to search for them: that fraction keeps
+    "succeeding" once a site has no more load left to shed, which used to report full
+    delivery for a call that shed nothing.
 
     `schedule` must be the object returned by `schedule()` in this same process --
     see the module docstring's ".attrs side-channel" note for why.
@@ -836,24 +981,84 @@ def dispatch(schedule: pd.DataFrame, event: ReductionEvent) -> pd.DataFrame:
             "See the src.sched.api module docstring."
         )
 
-    compliance_start = pd.Timestamp(event.call_t) + timedelta(minutes=event.notice_min)
+    # issue #27 finding 8: a window whose end does not follow its start caps nothing
+    # (the `compliance_start <= t < compliance_end` guard below is simply never true),
+    # so the untouched problem re-solves as if no call had been made and the full
+    # request silently invoices as delivered. Reject rather than coerce.
+    if not np.isfinite(event.notice_min) or event.notice_min < 0:
+        raise ValueError(
+            f"src.sched.dispatch: event.notice_min must be finite and >= 0 minutes, "
+            f"got {event.notice_min!r}"
+        )
+    if not np.isfinite(event.duration_min) or event.duration_min <= 0:
+        raise ValueError(
+            f"src.sched.dispatch: event.duration_min must be finite and > 0 minutes "
+            f"(an end that does not follow the start is not a compliance window), "
+            f"got {event.duration_min!r}"
+        )
+
+    call_t = pd.Timestamp(event.call_t)
+    call_t = call_t.tz_localize("UTC") if call_t.tzinfo is None else call_t.tz_convert("UTC")
+    compliance_start = call_t + timedelta(minutes=event.notice_min)
     compliance_end = compliance_start + timedelta(minutes=event.duration_min)
-    if compliance_start.tzinfo is None:
-        compliance_start = compliance_start.tz_localize("UTC")
-        compliance_end = compliance_end.tz_localize("UTC")
 
     sched = schedule.copy()
     sched["t"] = _as_utc(sched["t"])
-    site_totals = sched.groupby(["site_id", "t"])["power_kw"].sum()
+    site_totals_before = sched.groupby(["site_id", "t"])["power_kw"].sum()
+
+    # ---- issue #27 finding 5: freeze what has already elapsed. `t < call_t` was
+    # physically drawn under the committed schedule; a live dispatch can defer and
+    # recover *future* energy, but it cannot go back and redraw power that was not
+    # drawn. Only the residual problem -- each session's remaining energy over its
+    # remaining window, from call_t forward -- is handed to the solver; everything
+    # before call_t is carried through from `schedule` untouched.
+    past = sched[sched["t"] < call_t].copy()
+    if len(past):
+        site_dt: dict[str, pd.Series] = {}
+        for site_id, grp in envelope.groupby("site_id"):
+            site_dt[site_id] = _infer_interval_hours(grp["t"])
+        dt_vals = [
+            float(site_dt[sid].loc[t]) if sid in site_dt and t in site_dt[sid].index else 0.0
+            for sid, t in zip(past["site_id"], past["t"])
+        ]
+        delivered_past = (
+            (past["power_kw"] * pd.Series(dt_vals, index=past.index))
+            .groupby(past["session_id"]).sum()
+        )
+    else:
+        delivered_past = pd.Series(dtype=float)
+
+    future_rows = []
+    for row in sessions.itertuples(index=False):
+        t_arrive = pd.Timestamp(row.t_arrive)
+        t_depart = pd.Timestamp(row.t_depart)
+        new_arrive = max(t_arrive, call_t)
+        if new_arrive >= t_depart:
+            continue  # this session's whole window has already elapsed
+        remaining = max(0.0, float(row.energy_kwh) - float(delivered_past.get(row.session_id, 0.0)))
+        d = row._asdict()
+        d["t_arrive"] = new_arrive
+        d["energy_kwh"] = remaining
+        future_rows.append(d)
+    future_sessions = (
+        pd.DataFrame(future_rows, columns=sessions.columns) if future_rows else sessions.iloc[0:0].copy()
+    )
+    future_envelope = envelope[_as_utc(envelope["t"]) >= call_t]
+
+    # ---- issue #27 finding 1: release the sold floor over the compliance window
+    # (see `_release_floor_over_window`'s docstring) so the tightened envelope cap is
+    # the only thing limiting load there, instead of fighting a floor that is being
+    # delivered, not held.
+    released_commitments = _release_floor_over_window(commitments, compliance_start, compliance_end)
 
     def envelope_at_alpha(alpha: float) -> pd.DataFrame:
-        env = envelope.copy()
+        env = future_envelope.copy()
         env["t"] = _as_utc(env["t"])
         capped = []
         for row in env.itertuples(index=False):
             cap = row.max_kw
             if compliance_start <= row.t < compliance_end:
-                original_total = site_totals.get((row.site_id, row.t), 0.0)
+                original_total = site_totals_before.get((row.site_id, row.t), 0.0)
                 target = max(0.0, original_total - alpha * event.reduction_kw)
                 cap = min(cap, target)
             capped.append((row.site_id, row.t, cap))
@@ -862,28 +1067,41 @@ def dispatch(schedule: pd.DataFrame, event: ReductionEvent) -> pd.DataFrame:
     def try_alpha(alpha: float):
         env_a = envelope_at_alpha(alpha)
         try:
-            return _solve_all_sites(sessions, env_a, prices, commitments, solver)
+            return _solve_all_sites(future_sessions, env_a, prices, released_commitments, solver)
         except Infeasible:
             return None
 
     if event.reduction_kw <= 0:
-        best_df = _solve_all_sites(sessions, envelope, prices, commitments, solver)
+        future_best = _solve_all_sites(future_sessions, future_envelope, prices, commitments, solver)
         best_alpha = 0.0
     else:
-        best_df = try_alpha(1.0)
-        if best_df is not None:
+        future_best = try_alpha(1.0)
+        if future_best is not None:
             best_alpha = 1.0
         else:
             lo, hi = 0.0, 1.0
-            best_df = _solve_all_sites(sessions, envelope, prices, commitments, solver)
+            future_best = _solve_all_sites(future_sessions, future_envelope, prices, commitments, solver)
             best_alpha = 0.0
             for _ in range(16):  # ~1.5e-5 resolution on alpha
                 mid = (lo + hi) / 2.0
                 candidate = try_alpha(mid)
                 if candidate is not None:
-                    best_df, best_alpha, lo = candidate, mid, mid
+                    future_best, best_alpha, lo = candidate, mid, mid
                 else:
                     hi = mid
+
+    best_df = (
+        pd.concat([past[_SCHEDULE_COLUMNS], future_best[_SCHEDULE_COLUMNS]], ignore_index=True)
+        if len(past) else future_best[_SCHEDULE_COLUMNS].copy()
+    )
+    best_df = best_df.sort_values(["site_id", "t", "session_id"]).reset_index(drop=True)
+
+    # issue #27 finding 4: report what was actually shed, not what the alpha search
+    # merely proved solvable.
+    achieved = _measure_window_shed_kw(
+        site_totals_before, best_df, envelope, compliance_start, compliance_end
+    )
+    shortfall = max(0.0, float(event.reduction_kw) - achieved)
 
     best_df.attrs["sessions"] = sessions
     best_df.attrs["envelope"] = envelope
@@ -891,6 +1109,6 @@ def dispatch(schedule: pd.DataFrame, event: ReductionEvent) -> pd.DataFrame:
     best_df.attrs["commitments"] = commitments
     best_df.attrs["solver"] = solver
     best_df.attrs["reduction_kw_requested"] = float(event.reduction_kw)
-    best_df.attrs["reduction_kw_achieved"] = float(best_alpha * event.reduction_kw)
-    best_df.attrs["reduction_shortfall_kw"] = float((1.0 - best_alpha) * event.reduction_kw)
+    best_df.attrs["reduction_kw_achieved"] = float(achieved)
+    best_df.attrs["reduction_shortfall_kw"] = float(shortfall)
     return best_df

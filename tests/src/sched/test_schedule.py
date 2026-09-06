@@ -454,3 +454,323 @@ def test_baseline_asap_records_unmet_energy_not_silently():
     assert base.attrs["unmet_kwh_by_session"]["short"] == pytest.approx(3.0, abs=1e-6)
     assert base.attrs["unmet_kwh_total"] == pytest.approx(3.0, abs=1e-6)
     assert base.attrs["unmet_session_fraction"] == pytest.approx(0.5, abs=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# 10. Issue #27 -- eight defects the design review found invisible to the tests above.
+# ---------------------------------------------------------------------------
+
+
+def test_evaluate_excludes_energy_delivered_outside_sessions_own_window():
+    """#27 finding 1: `evaluate()` used to join `delivered` on `session_id` alone, with
+    no check on `site_id`/`t_arrive`/`deadline_t` -- so a hand-built schedule crediting
+    a session's energy at the wrong time (or site) read as a met deadline. Before this
+    fix: {'unmet_kwh': 0.0, 'deadline_misses': 0} for 20 kW delivered 75 minutes after
+    the session's own deadline. After: the energy is excluded, so it surfaces as unmet
+    energy and a deadline miss instead of being silently banked.
+    """
+    times = grid("2026-01-10T00:00", 8)  # 2 hours
+    sessions = mk_sessions([
+        dict(session_id="A", site_id="S1", t_arrive=times[0], t_depart=times[2],
+             energy_kwh=5.0, max_power_kw=10.0),  # deadline_t defaults to t_depart = times[2]
+    ])
+    envelope = mk_envelope("S1", times[:-1], 50.0)
+    prices = mk_prices(times[:-1], 50.0)
+
+    # hand-built, deliberately-broken schedule: all of session A's power lands at
+    # times[7], well after its deadline at times[2] -- physically it was never used to
+    # satisfy A's deadline, so it must not be credited as if it had been.
+    broken = pd.DataFrame([
+        {"t": times[7], "site_id": "S1", "session_id": "A", "power_kw": 20.0},
+    ])
+
+    result = api.evaluate(broken, sessions, envelope, prices, ())
+    assert result["unmet_kwh"] == pytest.approx(5.0, abs=1e-6), (
+        "energy delivered after the deadline must not count toward meeting it"
+    )
+    assert result["deadline_misses"] == 1
+    # the power was still physically drawn, so it still counts for envelope/peak/cost:
+    assert result["peak_kw"] == pytest.approx(20.0, abs=1e-6)
+
+
+def test_evaluate_excludes_energy_credited_to_the_wrong_site():
+    """Same finding, the site half: a schedule crediting session A's energy at site S2
+    (A never charges there) must not count toward A's deadline either -- the old
+    `groupby("session_id")` join had no site check at all."""
+    times = grid("2026-01-10T00:00", 4)
+    sessions = mk_sessions([
+        dict(session_id="A", site_id="S1", t_arrive=times[0], t_depart=times[4],
+             energy_kwh=5.0, max_power_kw=10.0),
+    ])
+    envelope = pd.concat([
+        mk_envelope("S1", times[:-1], 50.0),
+        mk_envelope("S2", times[:-1], 50.0),
+    ], ignore_index=True)
+    prices = mk_prices(times[:-1], 50.0)
+
+    broken = pd.DataFrame([
+        {"t": times[0], "site_id": "S2", "session_id": "A", "power_kw": 10.0},
+    ])
+    result = api.evaluate(broken, sessions, envelope, prices, ())
+    assert result["unmet_kwh"] == pytest.approx(5.0, abs=1e-6)
+    assert result["deadline_misses"] == 1
+
+
+def test_evaluate_empty_schedule_reports_full_floor_shortfall_not_zero():
+    """#27 finding 2: the empty-schedule early return hard-coded
+    `floor_shortfall_kw_min: 0.0` -- perfect floor compliance for a site delivering
+    nothing. An empty schedule under a live 40 kW commitment across 4 intervals is a
+    full shortfall: 40 kW short * 15 min * 4 intervals = 2400 kW*min."""
+    times = grid("2026-01-10T00:00", 4)
+    sessions = mk_sessions([
+        dict(session_id="A", site_id="S1", t_arrive=times[0], t_depart=times[4],
+             energy_kwh=5.0, max_power_kw=10.0),
+    ])
+    envelope = mk_envelope("S1", times[:-1], 50.0)
+    prices = mk_prices(times[:-1], 50.0)
+    commitment = api.Commitment(t_start=times[0], t_end=times[4], reduction_kw=40.0)
+    empty = pd.DataFrame(columns=["t", "site_id", "session_id", "power_kw"])
+
+    result = api.evaluate(empty, sessions, envelope, prices, (commitment,))
+    assert result["unmet_kwh"] == pytest.approx(5.0, abs=1e-6)
+    assert result["floor_shortfall_kw_min"] == pytest.approx(40.0 * 15.0 * 4, rel=1e-6), (
+        "an empty schedule delivering 0 kW against a live 40 kW floor is a full "
+        "shortfall, not perfect compliance"
+    )
+
+
+def test_evaluate_missing_site_interval_reports_floor_shortfall_not_silence():
+    """Same finding, the non-empty-path half: a schedule that has rows for some but not
+    all committed (site, t) pairs used to read the missing ones as "no obligation"
+    because the floor loop only ever visited rows present in the schedule."""
+    times = grid("2026-01-10T00:00", 4)
+    sessions = mk_sessions([
+        dict(session_id="A", site_id="S1", t_arrive=times[0], t_depart=times[4],
+             energy_kwh=5.0, max_power_kw=10.0),
+    ])
+    envelope = mk_envelope("S1", times[:-1], 50.0)
+    prices = mk_prices(times[:-1], 50.0)
+    commitment = api.Commitment(t_start=times[0], t_end=times[4], reduction_kw=40.0)
+    # only ONE of the 4 committed intervals has a schedule row at all.
+    partial = pd.DataFrame([
+        {"t": times[0], "site_id": "S1", "session_id": "A", "power_kw": 40.0},
+    ])
+    result = api.evaluate(partial, sessions, envelope, prices, (commitment,))
+    # times[1], times[2], times[3] are missing rows -> zero load against a live floor.
+    assert result["floor_shortfall_kw_min"] == pytest.approx(40.0 * 15.0 * 3, rel=1e-6)
+
+
+def test_zero_variable_lp_still_holds_the_floor():
+    """#27 finding 6: a session whose window does not intersect the envelope grid at
+    all produces zero LP variables, and `_solve_lp`'s `n == 0` early return used to fire
+    before any floor row was ever built -- reporting success while holding none of a
+    live floor. The on-grid, zero-power case (session present but drained) already
+    raised correctly; this is specifically the empty-variable path."""
+    times = grid("2026-01-10T00:00", 4)
+    envelope = mk_envelope("S1", times[:-1], 50.0)
+    prices = mk_prices(times[:-1], 50.0)
+    # session's own window starts only once the envelope grid has already ended.
+    one_interval = times[1] - times[0]
+    sessions = mk_sessions([
+        dict(session_id="A", site_id="S1", t_arrive=times[4], t_depart=times[4] + one_interval,
+             energy_kwh=0.0, max_power_kw=10.0),
+    ])
+    commitment = api.Commitment(t_start=times[0], t_end=times[4], reduction_kw=40.0)
+
+    with pytest.raises(api.Infeasible, match="floor"):
+        api.schedule(sessions, envelope, prices, commitments=(commitment,), solver="lp")
+    with pytest.raises(api.Infeasible, match="floor"):
+        api.schedule(sessions, envelope, prices, commitments=(commitment,), solver="greedy")
+
+
+def test_unknown_solver_string_is_rejected_not_silently_run_as_greedy():
+    """#27 finding 7: `solve_fn = _solve_site_lp if solver == "lp" else _solve_site_greedy`
+    made every non-"lp" string mean greedy -- a capitalisation typo like "LP" silently
+    changed the optimiser instead of raising."""
+    times = grid("2026-01-10T00:00", 4)
+    envelope = mk_envelope("S1", times[:-1], 50.0)
+    prices = mk_prices(times[:-1], 50.0)
+    sessions = mk_sessions([
+        dict(session_id="A", site_id="S1", t_arrive=times[0], t_depart=times[4],
+             energy_kwh=2.0, max_power_kw=10.0),
+    ])
+    with pytest.raises(ValueError, match="solver"):
+        api.schedule(sessions, envelope, prices, solver="LP")
+    with pytest.raises(ValueError, match="solver"):
+        api.schedule(sessions, envelope, prices, solver="bogus")
+
+
+def test_dispatch_rejects_negative_duration_event():
+    """#27 finding 8: `compliance_end < compliance_start` capped nothing, so a negative
+    `duration_min` solved the untouched problem and reported the full request as
+    delivered (`ReductionEvent(duration_min=-60.0, reduction_kw=999.0)` ->
+    `achieved 999.0, shortfall 0.0`). Reject rather than silently accept a window whose
+    end does not follow its start."""
+    times = grid("2026-01-10T00:00", 8)
+    envelope = mk_envelope("S1", times[:-1], 50.0)
+    prices = mk_prices(times[:-1], 50.0)
+    sessions = mk_sessions([
+        dict(session_id="A", site_id="S1", t_arrive=times[0], t_depart=times[8],
+             energy_kwh=4.0, max_power_kw=22.0),
+    ])
+    sched = api.schedule(sessions, envelope, prices)
+
+    event = api.ReductionEvent(call_t=times[4], notice_min=0.0, duration_min=-60.0,
+                                reduction_kw=999.0)
+    with pytest.raises(ValueError, match="duration_min"):
+        api.dispatch(sched, event)
+
+
+def test_dispatch_rejects_negative_notice():
+    """Same finding, the `notice_min` half."""
+    times = grid("2026-01-10T00:00", 8)
+    envelope = mk_envelope("S1", times[:-1], 50.0)
+    prices = mk_prices(times[:-1], 50.0)
+    sessions = mk_sessions([
+        dict(session_id="A", site_id="S1", t_arrive=times[0], t_depart=times[8],
+             energy_kwh=4.0, max_power_kw=22.0),
+    ])
+    sched = api.schedule(sessions, envelope, prices)
+
+    event = api.ReductionEvent(call_t=times[4], notice_min=-15.0, duration_min=30.0,
+                                reduction_kw=10.0)
+    with pytest.raises(ValueError, match="notice_min"):
+        api.dispatch(sched, event)
+
+
+def test_dispatch_never_changes_power_already_elapsed():
+    """#27 finding 5 / issue-3: `dispatch()` used to recover deferred energy by
+    charging in intervals that were already in the past relative to `event.call_t`,
+    because it re-solved every session's whole arrival-departure window regardless of
+    when the call arrived. Expensive-early/cheap-late prices push the unconstrained
+    schedule to fully use its 4 cheapest (latest) intervals with zero slack; a call
+    partway through that block can only be answered (if at all) by pinning everything
+    before `call_t` to what the committed schedule actually drew.
+    """
+    times = grid("2026-01-10T18:00", 8)  # 18:00 .. 20:00
+    price_values = [200.0] * 4 + [10.0] * 4  # expensive 18:00-19:00, cheap 19:00-20:00
+    prices = mk_prices(times[:-1], price_values)
+    envelope = mk_envelope("S1", times[:-1], 50.0)
+    sessions = mk_sessions([
+        # tight: 22 kW * 0.25h * 4 intervals == 22 kWh due -- the LP has no reason (and
+        # no room) to touch the expensive early hours at all.
+        dict(session_id="A", site_id="S1", t_arrive=times[0], t_depart=times[8],
+             energy_kwh=22.0, max_power_kw=22.0),
+    ])
+    sched = api.schedule(sessions, envelope, prices)
+    pre_totals = site_totals(sched).set_index("t")["total_kw"]
+    # guard: fixture really is tight and really does concentrate in the late block.
+    assert (pre_totals.reindex(times[:4], fill_value=0.0) == 0.0).all()
+    assert (pre_totals.reindex(times[4:8]) - 22.0).abs().max() < 1e-6
+
+    call_t = times[5]  # 19:15 -- one interval into the tight block
+    event = api.ReductionEvent(call_t=call_t, notice_min=0.0, duration_min=30.0,
+                                reduction_kw=22.0)
+    amended = api.dispatch(sched, event)
+    post_totals = site_totals(amended).set_index("t")["total_kw"]
+
+    elapsed = [t for t in times[:-1] if t < call_t]
+    for t in elapsed:
+        assert post_totals.get(t, 0.0) == pytest.approx(pre_totals.get(t, 0.0), abs=1e-6), (
+            f"power at {t}, which had already elapsed when the call arrived, changed "
+            f"between the committed and amended schedule"
+        )
+    # with no slack anywhere else and the past pinned, the honest answer is that
+    # nothing can be shed here without a deadline miss -- dispatch must refuse, not
+    # manufacture room by rewriting the past.
+    audit = api.evaluate(amended, sessions, envelope, prices, ())
+    assert audit["deadline_misses"] == 0
+    assert audit["unmet_kwh"] == pytest.approx(0.0, abs=1e-6)
+    assert amended.attrs["reduction_kw_achieved"] == pytest.approx(0.0, abs=1e-3)
+    assert amended.attrs["reduction_shortfall_kw"] == pytest.approx(22.0, abs=1e-3)
+
+
+def test_dispatch_reports_measured_shed_not_solver_feasibility():
+    """#27 finding 4: `reduction_kw_achieved` used to be `alpha * event.reduction_kw` --
+    proof only that a solve succeeded under a cap of `max(0, original - request)`. When
+    nothing was sold, the cost-optimal plan already sits at 0 kW during the requested
+    window, so that cap is trivially satisfiable at alpha=1 despite zero kW actually
+    being shed: before this fix, requesting 60 kW here reported `achieved: 60.0,
+    shortfall: 0.0` for a call that changed nothing.
+    """
+    times = grid("2026-01-10T00:00", 16)  # 4 hours
+    # expensive everywhere except a late valley -- nothing is sold, so the LP puts
+    # every session's charging in the cheap valley and leaves the requested window at
+    # 0 kW on its own, with no event involved at all.
+    price_values = [100.0] * 12 + [10.0] * 4
+    prices = mk_prices(times[:-1], price_values)
+    envelope = mk_envelope("S1", times[:-1], 100.0)
+    sessions = mk_sessions([
+        dict(session_id=f"V{i}", site_id="S1", t_arrive=times[0], t_depart=times[16],
+             energy_kwh=8.0, max_power_kw=8.0)
+        for i in range(4)
+    ])
+    sched = api.schedule(sessions, envelope, prices)  # no commitments sold
+    pre_totals = site_totals(sched).set_index("t")["total_kw"]
+    window = times[4:8]
+    assert (pre_totals.reindex(window, fill_value=0.0) == 0.0).all(), (
+        "fixture must leave the requested window at 0 kW with nothing sold, or this "
+        "test proves nothing"
+    )
+
+    event = api.ReductionEvent(call_t=window[0], notice_min=0.0, duration_min=60.0,
+                                reduction_kw=60.0)
+    amended = api.dispatch(sched, event)
+    post_totals = site_totals(amended).set_index("t")["total_kw"]
+
+    actual_shed = float((pre_totals.reindex(window, fill_value=0.0)
+                          - post_totals.reindex(window, fill_value=0.0)).min())
+    assert actual_shed == pytest.approx(0.0, abs=1e-6)
+    assert amended.attrs["reduction_kw_achieved"] == pytest.approx(actual_shed, abs=1e-3), (
+        "reduction_kw_achieved must equal what was actually measured, not what the "
+        "solver merely proved feasible"
+    )
+    assert amended.attrs["reduction_kw_achieved"] == pytest.approx(0.0, abs=1e-3)
+    assert amended.attrs["reduction_shortfall_kw"] == pytest.approx(60.0, abs=1e-3)
+
+
+def test_dispatch_releases_floor_in_compliance_window_and_sheds_the_full_request():
+    """#27 finding 1 (+ 4 measured together): selling exactly the reduction later
+    called for, in its own window, must actually shed that amount. Before this fix,
+    `dispatch()` passed the sold commitment through unchanged, so the floor (load >=
+    60 kW) stayed enforced *during* the compliance window while the tightened envelope
+    capped the site at `original - 60` -- the two constraints fought and the floor won,
+    shedding only ~28 kW of the 60 kW sold and called for.
+    """
+    times = grid("2026-01-10T00:00", 16)  # 4 hours
+    # cheap only in the window we sell/curtail; pricier everywhere else, so the
+    # unconstrained optimum voluntarily loads the site up there.
+    price_values = [100.0] * 4 + [10.0] * 4 + [100.0] * 8
+    prices = mk_prices(times[:-1], price_values)
+    envelope = mk_envelope("S1", times[:-1], 100.0)
+    sessions = mk_sessions([
+        dict(session_id=f"V{i}", site_id="S1", t_arrive=times[0], t_depart=times[16],
+             energy_kwh=22.0, max_power_kw=22.0)
+        for i in range(4)
+    ])
+    window = times[4:8]
+    commitment = api.Commitment(t_start=window[0], t_end=times[8], reduction_kw=60.0)
+
+    sched = api.schedule(sessions, envelope, prices, commitments=(commitment,))
+    pre_totals = site_totals(sched).set_index("t")["total_kw"]
+    # guard: the fixture genuinely piles up well past the 60 kW floor on its own (four
+    # 22 kW sessions with nowhere cheaper to be), so shedding down to 60 is a real cut.
+    assert (pre_totals.reindex(window) > 60.0 + 1e-6).all()
+
+    event = api.ReductionEvent(call_t=window[0], notice_min=0.0, duration_min=60.0,
+                                reduction_kw=60.0)
+    amended = api.dispatch(sched, event)
+    post_totals = site_totals(amended).set_index("t")["total_kw"]
+
+    actual_shed = float((pre_totals.reindex(window) - post_totals.reindex(window)).min())
+    assert actual_shed == pytest.approx(60.0, abs=1e-2), (
+        f"selling 60 kW and calling for 60 kW in-window should shed 60 kW, measured "
+        f"{actual_shed:.3f} kW"
+    )
+    assert amended.attrs["reduction_kw_achieved"] == pytest.approx(60.0, abs=1e-2)
+    assert amended.attrs["reduction_shortfall_kw"] == pytest.approx(0.0, abs=1e-2)
+
+    audit = api.evaluate(amended, sessions, envelope, prices, ())
+    assert audit["deadline_misses"] == 0
+    assert audit["unmet_kwh"] == pytest.approx(0.0, abs=1e-6)
+    assert audit["envelope_violation_kwh"] == pytest.approx(0.0, abs=1e-6)
