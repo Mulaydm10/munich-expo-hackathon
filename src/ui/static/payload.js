@@ -55,6 +55,23 @@ export function extent(rows, key) {
   return Number.isFinite(lo) ? [lo, hi] : null;
 }
 
+// CSS-pixel pointer coordinates (a pointer event's offsetX/offsetY) -> the canvas's
+// own intrinsic pixel space. A canvas's `width`/`height` attributes set the resolution
+// of its backing store; the shared responsive CSS (`canvas { width: 100%; height:
+// auto; }`, flexgrid.css) can render that backing store at any displayed size, and
+// `offsetX`/`offsetY` are always reported in the DISPLAYED (CSS) size, not the
+// intrinsic one. Comparing one space against the other, or scaling a drag delta by
+// `canvas.width` instead of the on-screen width, displaces every hit-test and drag by
+// the ratio between them -- which "width: 100%" makes true on essentially every real
+// screen. ONE helper, used for both hover and drag, so the two paths cannot drift
+// apart the way they did (#40).
+export function toCanvasPoint(canvas, offsetX, offsetY) {
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = rect.width > 0 ? canvas.width / rect.width : 1;
+  const scaleY = rect.height > 0 ? canvas.height / rect.height : 1;
+  return { x: offsetX * scaleX, y: offsetY * scaleY };
+}
+
 export function berlinClock(iso) {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "unknown time";

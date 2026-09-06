@@ -9,7 +9,7 @@
 // server, and "loads with the API reachable and nothing else" is a hard guarantee.
 // Coastline-free is fine; the dots carry the geography.
 
-import { readPayload, drawUnavailable } from "./payload.js";
+import { readPayload, drawUnavailable, toCanvasPoint } from "./payload.js";
 
 // Display buckets, mirroring MAP_LEGEND_BINS in src/ui/api.py (the legend table is
 // rendered server-side from that constant; keep the two in step). Each bucket has a
@@ -132,17 +132,23 @@ if (canvas && !Array.isArray(sites)) {
   let lastBinned = false;
   let hovered = null;
 
-  // The legend promises that hovering a site shows its own firm_kw. Before this handler
-  // there was no hit-testing at all, so the page promised a figure it could not show.
-  // Nothing here is computed: the hovered site's own value is printed verbatim, and a
-  // site whose capacity the API omitted says so instead of reading 0.
+  // The legend promises that hovering a site shows its own EXACT firm_kw. Before this
+  // handler there was no hit-testing at all, so the page promised a figure it could not
+  // show. Nothing here is computed: the hovered site's own value is printed verbatim,
+  // and a site whose capacity the API omitted says so instead of reading 0.
+  //
+  // `String(kw)` -- NOT `kw.toLocaleString()`. The argument-free form of
+  // `toLocaleString()` defaults to a maximum of 3 fraction digits, so 12.34567 rendered
+  // as "12.346" while this very legend promised the site's exact firm_kw (#40 item 3).
+  // `String()` is JS's own exact decimal rendering of the stored double -- no rounding
+  // function stands between the value on the wire and the value on screen.
   function renderReadout() {
     if (!readout) return;
     if (hovered) {
       const kw = firmKw(hovered);
       readout.textContent =
         `${hovered.site_id ?? "site"}: ` +
-        (kw === null ? UNKNOWN_TEXT : `${kw.toLocaleString()} kW firm capacity`);
+        (kw === null ? UNKNOWN_TEXT : `${String(kw)} kW firm capacity`);
       return;
     }
     const unknown = lastVisible.filter((s) => firmKw(s) === null).length;
@@ -205,20 +211,30 @@ if (canvas && !Array.isArray(sites)) {
     setView({ lat: [midLat - halfLat, midLat + halfLat], lon: [midLon - halfLon, midLon + halfLon] });
   }, { passive: false });
 
+  // Both the hover hit-test and the drag delta compare a pointer position against
+  // marks drawn in the canvas's intrinsic 1200x800 backing store, so both must convert
+  // through the SAME helper (#40 item 4). `siteAt` used to compare raw
+  // `ev.offsetX/offsetY` (displayed CSS pixels) against that backing store directly,
+  // and the drag handler divided a raw offsetX delta by `canvas.width` -- the shared
+  // responsive CSS renders the canvas at `width: 100%`, so both were displaced by the
+  // same mismatched scale factor on essentially every real screen.
   let dragging = null;
-  canvas.addEventListener("pointerdown", (ev) => { dragging = { x: ev.offsetX, y: ev.offsetY }; });
+  canvas.addEventListener("pointerdown", (ev) => {
+    dragging = toCanvasPoint(canvas, ev.offsetX, ev.offsetY);
+  });
   window.addEventListener("pointerup", () => { dragging = null; });
   canvas.addEventListener("pointerleave", () => { hovered = null; renderReadout(); });
   canvas.addEventListener("pointermove", (ev) => {
+    const p = toCanvasPoint(canvas, ev.offsetX, ev.offsetY);
     if (!dragging) {
-      const hit = siteAt(ev.offsetX, ev.offsetY);
+      const hit = siteAt(p.x, p.y);
       if (hit !== hovered) { hovered = hit; renderReadout(); }
       return;
     }
-    const dLon = ((ev.offsetX - dragging.x) / canvas.width) * (view.lon[1] - view.lon[0]);
-    const dLat = ((ev.offsetY - dragging.y) / canvas.height) * (view.lat[1] - view.lat[0]);
+    const dLon = ((p.x - dragging.x) / canvas.width) * (view.lon[1] - view.lon[0]);
+    const dLat = ((p.y - dragging.y) / canvas.height) * (view.lat[1] - view.lat[0]);
     setView({ lat: [view.lat[0] + dLat, view.lat[1] + dLat], lon: [view.lon[0] - dLon, view.lon[1] - dLon] });
-    dragging = { x: ev.offsetX, y: ev.offsetY };
+    dragging = p;
   });
 
   window.addEventListener("keydown", (ev) => {

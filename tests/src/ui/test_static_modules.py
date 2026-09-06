@@ -51,6 +51,19 @@ def source(name: str) -> str:
     return (api.STATIC_DIR / name).read_text()
 
 
+def _code_only(text: str) -> str:
+    """`text` with every full-line `//` comment blanked out.
+
+    A whole-line comment is free to explain a fix using the exact broken snippet it
+    replaced (as this file's own comments do, e.g. quoting `kw.toLocaleString()` or
+    `ev.offsetX`); a scanner that treated that prose as code would pass or fail for the
+    wrong reason. This is NOT a JavaScript parser (ADR-0002 rules that toolchain out) --
+    it only drops lines whose first non-whitespace characters are `//`, so a trailing
+    `// comment` after real code on the same line is deliberately left alone.
+    """
+    return "\n".join(line for line in text.splitlines() if not line.strip().startswith("//"))
+
+
 def html_sinks_in(text: str) -> list[str]:
     """Every banned sink appearing in `text`. Comments are NOT excluded: a module in
     this directory has no reason to spell one of these names at all, and a scanner that
@@ -189,6 +202,65 @@ def test_every_series_renderer_breaks_at_a_gap_through_one_shared_helper() -> No
     assert "for (const run of runs(rows, key))" in band.group(1)
     # The single-polygon-over-all-rows shape must be gone from the band.
     assert "ctx.moveTo(x(0), yKw(0))" not in band.group(1)
+
+
+# --- #40 item 3: the hover readout must not round the value it promises is exact ----
+
+def test_the_hover_readout_does_not_round_the_exact_firm_kw_it_promises() -> None:
+    """#40 item 3. `toLocaleString()` with no arguments caps at 3 fraction digits, so
+    `12.34567` rendered as `12.346` while the map legend promises the site's EXACT
+    `firm_kw`. `String(kw)` is JS's own exact decimal rendering of the stored double --
+    no rounding function stands between the wire value and the screen.
+
+    SOURCE ASSERTION, NOT EXECUTION: ADR-0002 rules out a JS runtime in this repo's CI
+    (`node --check` exits 0 on a deliberately broken file and proves nothing), so
+    nothing here proves a browser actually prints the unrounded string -- only that the
+    rounding call is gone and the exact-rendering call is present at the call site that
+    used to round.
+    """
+    js = source("screen-map.js")
+    code_lines = _code_only(js)
+    assert "toLocaleString()" not in code_lines, "an executable toLocaleString() call remains"
+    assert re.search(r"String\(kw\)\s*\}\s*kW firm capacity", js), (
+        "renderReadout must interpolate the exact value, not a locale-rounded one"
+    )
+
+
+# --- #40 item 4: hover and drag must convert through one coordinate helper ----------
+
+def test_the_map_converts_pointer_coordinates_through_one_shared_helper() -> None:
+    """#40 item 4. `siteAt` compared CSS-pixel `ev.offsetX/offsetY` against sites
+    projected into the canvas's 1200x800 intrinsic backing store; the shared responsive
+    CSS renders the canvas at `width: 100%`, so the two spaces differ on essentially
+    every real screen and hit-testing was displaced. The pan handler divided a raw
+    `offsetX` delta by `canvas.width`, mis-scaled by the same factor. Both paths must
+    convert through `getBoundingClientRect()` via ONE shared helper, or they can drift
+    apart exactly the way this defect did.
+
+    SOURCE ASSERTION, NOT EXECUTION: this shows both call sites route through
+    `toCanvasPoint`, not that the resulting pixel math is correct in a real browser.
+    """
+    payload_src = source("payload.js")
+    assert "export function toCanvasPoint(canvas, offsetX, offsetY)" in payload_src
+    assert "getBoundingClientRect" in payload_src
+    assert "canvas.width / rect.width" in payload_src
+    assert "canvas.height / rect.height" in payload_src
+
+    js = source("screen-map.js")
+    assert re.search(r'import \{[^}]*\btoCanvasPoint\b[^}]*\} from "\./payload\.js"', js)
+    # Both the hover path (siteAt) and the drag path (the pointermove delta) must
+    # consume the SAME conversion call -- not two independent ones that can disagree.
+    conversions = re.findall(r"toCanvasPoint\(canvas, ev\.offsetX, ev\.offsetY\)", js)
+    assert len(conversions) >= 2, "pointerdown and pointermove must both convert"
+    assert "siteAt(p.x, p.y)" in js
+    # No raw offsetX/offsetY may bypass the helper in executable code: removing every
+    # converted call site should remove every mention of ev.offsetX/ev.offsetY from the
+    # code (comments describing the fix are exempt).
+    code_lines = _code_only(js)
+    stripped = re.sub(r"toCanvasPoint\(canvas, ev\.offsetX, ev\.offsetY\)", "", code_lines)
+    assert "ev.offsetX" not in stripped and "ev.offsetY" not in stripped, (
+        "a raw ev.offsetX/offsetY outside the shared conversion means an unconverted path"
+    )
 
 
 def test_no_module_grew_a_node_dependency() -> None:
