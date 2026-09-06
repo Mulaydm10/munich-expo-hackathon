@@ -1,5 +1,6 @@
-# SYNTHETIC FIXTURE - authored for FlexGrid issue #8, not a real SMARD download.
-# Fall-back day: local 02:00 hour occurs twice.
-Datum von;Datum bis;Braunkohle [MWh];Steinkohle [MWh];Erdgas [MWh];Kernenergie [MWh];Wind [MWh];Photovoltaik [MWh]
-25.10.2026 02:00;25.10.2026 03:00;30,00;14,00;11,00;0,00;18,00;0,00
-25.10.2026 02:00;25.10.2026 03:00;29,00;13,00;10,00;0,00;19,00;0,00
+# SYNTHETIC FIXTURE - authored for FlexGrid issue #8/#50, not a real SMARD download.
+# Fall-back day: local 02:00 hour occurs twice. Wind split Onshore/Offshore,
+# Biomasse/Wasserkraft included (issue #50 finding 1).
+Datum von;Datum bis;Braunkohle [MWh];Steinkohle [MWh];Erdgas [MWh];Kernenergie [MWh];Wind Onshore [MWh];Wind Offshore [MWh];Photovoltaik [MWh];Biomasse [MWh];Wasserkraft [MWh];Pumpspeicher [MWh]
+25.10.2026 02:00;25.10.2026 03:00;30,00;14,00;11,00;0,00;16,00;2,00;0,00;7,00;3,00;0,00
+25.10.2026 02:00;25.10.2026 03:00;29,00;13,00;10,00;0,00;17,00;2,00;0,00;7,00;3,00;0,00

@@ -30,6 +30,7 @@ import io
 import json
 import math
 import os
+import warnings
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -571,40 +572,137 @@ def _parse_prices_raw(raw: bytes) -> pd.DataFrame:
     return pd.DataFrame({"t_local_naive": t_start, "price_eur_mwh": price})
 
 
-# Approximate operational (direct-combustion) CO2 intensity by fuel, g/kWh --
-# order-of-magnitude figures consistent with published ranges from
-# Umweltbundesamt / Fraunhofer ISE generation-mix reporting. A named
-# assumption, not a measured quantity (CONVENTIONS.md's rule on named
-# constants vs. invented statistics): renewables/nuclear carry only their
-# direct combustion emissions here (~0-11), not full lifecycle figures.
+# Lifecycle-ish, order-of-magnitude CO2 intensity by generation category,
+# g/kWh -- a named assumption, not a measured quantity (CONVENTIONS.md's rule
+# on named constants vs. invented statistics). Issue #50 finding 1: the
+# previous six-fuel list (lignite/hard coal/gas/nuclear/wind/solar) excluded
+# biomass (~9% of German generation) and hydro (~4%) from BOTH the numerator
+# and the denominator, which reads more fossil-heavy than reality and
+# overstates intensity_g_kwh -- which flows straight into co2_kg_saved, a
+# headline pitch figure. Fixed by carrying every category SMARD's real
+# generation-by-fuel-type export names for which a widely-cited factor
+# exists, biomass and hydro included at their real (non-zero) figures.
+#
+# Citations:
+# - Braunkohle (lignite): German-fleet-specific direct-combustion figure,
+#   Umweltbundesamt / Fraunhofer ISE generation-mix reporting (order of
+#   magnitude ~1080 g/kWh; lignite runs materially higher than IPCC's
+#   generic "coal" median because of the German fleet's older plants and
+#   lower calorific fuel).
+# - Steinkohle, Erdgas, Kernenergie, Wind Onshore, Wind Offshore,
+#   Photovoltaik, Biomasse, Wasserkraft: IPCC AR5 WG3 (2014), Annex III,
+#   Table A.III.2 "Emissions of Selected Electricity Supply Technologies"
+#   -- median lifecycle gCO2eq/kWh figures (coal 820 generic used for hard
+#   coal, gas 490, nuclear 12, wind onshore 11, wind offshore 12, solar PV
+#   ~41-48 -- 45 used here, hydropower 24, biomass 230). Biomass is
+#   deliberately NOT treated as zero-carbon: combustion of the harvested
+#   fuel is a real, cited emission, not merely upstream/lifecycle overhead.
 CARBON_INTENSITY_FACTORS_G_KWH: dict[str, float] = {
-    "Braunkohle": 1080.0,  # lignite
-    "Steinkohle": 820.0,  # hard coal
-    "Erdgas": 490.0,  # natural gas
-    "Kernenergie": 12.0,  # nuclear
-    "Wind": 11.0,
-    "Photovoltaik": 45.0,  # solar
+    "Braunkohle": 1080.0,  # lignite -- UBA/Fraunhofer ISE, German-fleet-specific
+    "Steinkohle": 820.0,  # hard coal -- IPCC AR5 WG3 Annex III Table A.III.2 median
+    "Erdgas": 490.0,  # natural gas -- IPCC AR5 WG3 Annex III Table A.III.2 median
+    "Kernenergie": 12.0,  # nuclear -- IPCC AR5 WG3 Annex III Table A.III.2 median
+    "Wind Onshore": 11.0,  # IPCC AR5 WG3 Annex III Table A.III.2 median
+    "Wind Offshore": 12.0,  # IPCC AR5 WG3 Annex III Table A.III.2 median (higher: foundations/marine logistics)
+    "Photovoltaik": 45.0,  # solar -- IPCC AR5 WG3 Annex III Table A.III.2, range ~41-48, midpoint used
+    "Biomasse": 230.0,  # biomass -- IPCC AR5 WG3 Annex III Table A.III.2 median; NOT zero-carbon
+    "Wasserkraft": 24.0,  # hydropower -- IPCC AR5 WG3 Annex III Table A.III.2 median
 }
 
-_GENERATION_MIX_FUELS = list(CARBON_INTENSITY_FACTORS_G_KWH)
+# Generation categories a real SMARD export can carry that have NO single
+# widely-cited emission factor -- named here only as documentation of what
+# we expect to see, NOT as an allow-list the parser depends on (see below):
+# Pumpspeicher (pumped-storage hydro) re-emits whatever generation charged
+# the reservoir, so it has no factor of its own without a separate
+# charge-mix model; the two "Sonstige" buckets are undifferentiated mixes
+# (geothermal/biogas, or oil/waste-incineration/other fossil) with no single
+# citable number.
+_EXPECTED_UNKNOWN_FACTOR_CATEGORIES: tuple[str, ...] = (
+    "Pumpspeicher",
+    "Sonstige Erneuerbare",
+    "Sonstige Konventionelle",
+)
+
+_MWH_SUFFIX = " [MWh]"
 
 
-def _parse_generation_mix_raw(raw: bytes) -> pd.DataFrame:
-    """One generation_mix raw file (generation by fuel type, MWh) -> rows
-    with a naive local `t` plus intensity_g_kwh: the generation-weighted
-    average of CARBON_INTENSITY_FACTORS_G_KWH. A weighted average of rates is
-    scale-invariant in the underlying energy unit, so no MWh->MW conversion
-    is needed here (unlike grid_load)."""
+def _parse_generation_mix_raw(raw: bytes) -> tuple[pd.DataFrame, list[str]]:
+    """One generation_mix raw file (generation by fuel type, MWh) -> (rows,
+    excluded_fuel_names).
+
+    `rows` has a naive local `t`, intensity_g_kwh (the generation-weighted
+    average of CARBON_INTENSITY_FACTORS_G_KWH over only the categories with
+    a known factor), plus two private helper columns (`_known_gen_mwh`,
+    `_excluded_gen_mwh`) that `_canonicalise_generation_mix` uses to compute
+    and record how much generation had no known factor.
+
+    Per CONVENTIONS.md ("any coercion is observable"), a generation category
+    with no known emission factor is never silently invisible: EVERY
+    `"<category> [MWh]"` column actually present in the raw file is
+    classified, generically, as either "known" (its name is a
+    CARBON_INTENSITY_FACTORS_G_KWH key) or "excluded" (anything else --
+    covering `_EXPECTED_UNKNOWN_FACTOR_CATEGORIES` above, but also any
+    other/renamed/unanticipated category a real export might carry, e.g. a
+    legacy un-split "Wind" column now that Onshore/Offshore are the known
+    keys). Excluded generation is dropped from BOTH the numerator and the
+    denominator of intensity_g_kwh -- counting it in the denominator alone
+    would silently treat it as zero-carbon, which is just as dishonest as
+    ignoring it -- and the exclusion is made visible two ways: a runtime
+    warning here whenever a file actually carries nonzero excluded
+    generation, and the `excluded_generation_*` fields
+    `_canonicalise_generation_mix` writes to carbon.meta.json.
+
+    A weighted average of rates is scale-invariant in the underlying energy
+    unit, so no MWh->MW conversion is needed here (unlike grid_load)."""
     df = _read_de_series_csv(raw)
     t_start = _parse_smard_datetime_local(df["Datum von"])
-    gen = pd.DataFrame(
-        {fuel: _decimal_comma_to_float(df[f"{fuel} [MWh]"]) for fuel in _GENERATION_MIX_FUELS}
+
+    generation_cols = [c for c in df.columns if c.endswith(_MWH_SUFFIX)]
+    known_cols = [c for c in generation_cols if c[: -len(_MWH_SUFFIX)] in CARBON_INTENSITY_FACTORS_G_KWH]
+    excluded_cols = [c for c in generation_cols if c not in known_cols]
+
+    if not known_cols:
+        raise ValueError(
+            "generation_mix raw file has none of the known-factor generation "
+            f"columns {list(CARBON_INTENSITY_FACTORS_G_KWH)}; got columns {list(df.columns)}"
+        )
+
+    known_fuels = [c[: -len(_MWH_SUFFIX)] for c in known_cols]
+    gen_known = pd.DataFrame(
+        {fuel: _decimal_comma_to_float(df[f"{fuel}{_MWH_SUFFIX}"]) for fuel in known_fuels}
     )
-    factors = pd.Series(CARBON_INTENSITY_FACTORS_G_KWH)
-    total_gen = gen.sum(axis=1)
-    weighted = (gen * factors).sum(axis=1)
-    intensity = weighted / total_gen
-    return pd.DataFrame({"t_local_naive": t_start, "intensity_g_kwh": intensity})
+    factors = pd.Series(CARBON_INTENSITY_FACTORS_G_KWH)[known_fuels]
+    total_known = gen_known.sum(axis=1)
+    weighted = (gen_known * factors).sum(axis=1)
+    intensity = weighted / total_known
+
+    excluded_fuels = [c[: -len(_MWH_SUFFIX)] for c in excluded_cols]
+    if excluded_cols:
+        gen_excluded = pd.DataFrame(
+            {fuel: _decimal_comma_to_float(df[col]) for fuel, col in zip(excluded_fuels, excluded_cols)}
+        )
+        total_excluded = gen_excluded.sum(axis=1)
+    else:
+        total_excluded = pd.Series(0.0, index=df.index)
+
+    if (total_excluded > 0).any():
+        warnings.warn(
+            "generation_mix raw file carries generation with no known emission "
+            f"factor in {excluded_fuels} (issue #50); excluded from both the "
+            "numerator and denominator of intensity_g_kwh -- see "
+            "carbon.meta.json's excluded_generation_mwh_share_mean.",
+            stacklevel=2,
+        )
+
+    rows = pd.DataFrame(
+        {
+            "t_local_naive": t_start,
+            "intensity_g_kwh": intensity,
+            "_known_gen_mwh": total_known,
+            "_excluded_gen_mwh": total_excluded,
+        }
+    )
+    return rows, excluded_fuels
 
 
 # --- DWD raw parsing (weather) ----------------------------------------------
@@ -713,9 +811,28 @@ def _canonicalise_epex_day_ahead(*, root: Path) -> Path:
 
 def _canonicalise_generation_mix(*, root: Path) -> Path:
     raw_files = _raw_files(root, "generation_mix")
-    rows = pd.concat([_parse_generation_mix_raw(p.read_bytes()) for p in raw_files], ignore_index=True)
-    hourly, n_dropped = _finalize_local_series(rows, value_cols=["intensity_g_kwh"])
-    quarter, method = _resample_15min(hourly, ["intensity_g_kwh"], native_resolution_min=60)
+    parsed = [_parse_generation_mix_raw(p.read_bytes()) for p in raw_files]
+    rows = pd.concat([r for r, _ in parsed], ignore_index=True)
+    # Union across every raw file, not just the static "expected" list: a
+    # file can carry an excluded category we didn't anticipate (see
+    # _parse_generation_mix_raw's docstring), and this must say so.
+    excluded_categories_seen = sorted({fuel for _, fuels in parsed for fuel in fuels})
+    helper_cols = ["intensity_g_kwh", "_known_gen_mwh", "_excluded_gen_mwh"]
+    hourly, n_dropped = _finalize_local_series(rows, value_cols=helper_cols)
+    quarter, method = _resample_15min(hourly, helper_cols, native_resolution_min=60)
+
+    # Issue #50 finding 1: excluded generation (no known emission factor,
+    # e.g. Pumpspeicher / "Sonstige *") must not be silently dropped from
+    # the denominator. It already isn't part of intensity_g_kwh's own
+    # numerator/denominator (see _parse_generation_mix_raw), but the fact
+    # and size of the exclusion is recorded here rather than only living in
+    # an in-process warning, so it survives to whoever reads carbon.meta.json.
+    total_gen = quarter["_known_gen_mwh"] + quarter["_excluded_gen_mwh"]
+    excluded_share = (quarter["_excluded_gen_mwh"] / total_gen).where(total_gen > 0)
+    excluded_share_mean = float(excluded_share.dropna().mean()) if excluded_share.notna().any() else 0.0
+    n_rows_with_excluded_generation = int((quarter["_excluded_gen_mwh"] > 0).sum())
+
+    quarter = quarter.drop(columns=["_known_gen_mwh", "_excluded_gen_mwh"])
     require_columns(quarter, ["t", "intensity_g_kwh"])
     return _write_canonical(
         quarter,
@@ -728,6 +845,9 @@ def _canonicalise_generation_mix(*, root: Path) -> Path:
             "native_resolution_min": 60,
             "n_nonexistent_local_times_dropped": n_dropped,
             "emission_factors_g_kwh": CARBON_INTENSITY_FACTORS_G_KWH,
+            "excluded_generation_categories": excluded_categories_seen,
+            "excluded_generation_mwh_share_mean": excluded_share_mean,
+            "n_rows_with_excluded_generation_category": n_rows_with_excluded_generation,
         },
     )
 

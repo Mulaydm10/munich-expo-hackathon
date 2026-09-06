@@ -1,9 +1,13 @@
-# SYNTHETIC FIXTURE - authored for FlexGrid issue #8, not a real SMARD download.
+# SYNTHETIC FIXTURE - authored for FlexGrid issue #8/#50, not a real SMARD download.
 # Generation-by-fuel-type mix; src.data.api derives carbon intensity from this
-# plus published per-fuel emission factors (see CARBON_INTENSITY_FACTORS in
-# src/data/api.py), rather than from an ENTSO-E API key we do not have.
-Datum von;Datum bis;Braunkohle [MWh];Steinkohle [MWh];Erdgas [MWh];Kernenergie [MWh];Wind [MWh];Photovoltaik [MWh]
-15.06.2026 12:00;15.06.2026 13:00;20,00;10,00;15,00;0,00;30,00;40,00
-15.06.2026 13:00;15.06.2026 14:00;18,00;9,00;14,00;0,00;32,00;42,00
-15.06.2026 14:00;15.06.2026 15:00;16,00;8,00;13,00;0,00;34,00;38,00
-15.06.2026 15:00;15.06.2026 16:00;15,00;7,00;12,00;0,00;36,00;35,00
+# plus published per-category emission factors (see
+# CARBON_INTENSITY_FACTORS_G_KWH in src/data/api.py), rather than from an
+# ENTSO-E API key we do not have. Wind is split Onshore/Offshore (SMARD's
+# real column shape) and Biomasse/Wasserkraft are included with real,
+# non-zero factors (issue #50 finding 1). Pumpspeicher has no known factor
+# and is present here (row 1) to exercise the "excluded but visible" path.
+Datum von;Datum bis;Braunkohle [MWh];Steinkohle [MWh];Erdgas [MWh];Kernenergie [MWh];Wind Onshore [MWh];Wind Offshore [MWh];Photovoltaik [MWh];Biomasse [MWh];Wasserkraft [MWh];Pumpspeicher [MWh]
+15.06.2026 12:00;15.06.2026 13:00;20,00;10,00;15,00;0,00;25,00;5,00;40,00;10,00;5,00;2,00
+15.06.2026 13:00;15.06.2026 14:00;18,00;9,00;14,00;0,00;27,00;5,00;42,00;10,00;5,00;1,00
+15.06.2026 14:00;15.06.2026 15:00;16,00;8,00;13,00;0,00;29,00;5,00;38,00;9,00;5,00;1,00
+15.06.2026 15:00;15.06.2026 16:00;15,00;7,00;12,00;0,00;31,00;5,00;35,00;9,00;4,00;0,00
