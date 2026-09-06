@@ -1,11 +1,14 @@
 """src.market — public API.
 
-Firm capacity, bidding and settlement in euros and CO2: issue #14's scope, the
-single-site money path end to end. Portfolio pooling (`pool`,
-`correlation_structure`, `diversification_curve`) is a separate, deferred
-issue per design's sequencing -- that work exists on branch
-`parked/market-pooling`, not here, so it does not pre-empt acceptance
-criteria design has not written yet.
+Firm capacity, portfolio pooling, bidding and settlement in euros and CO2.
+
+The single-site money path (`firm_capacity`, `bid`, `settle`, `energy_cost`,
+`co2`, `peakers_displaced`) shipped in #14. The portfolio path (`pool`,
+`correlation_structure`, `diversification_curve`) shipped in #33 and carries
+the project's central claim: a pool of imperfectly-correlated sites can sell
+a firmer promise than the sum of its members' own conservative quantiles.
+Every number in that claim is measured -- the dependence structure from
+residuals, the shortfall rate from realised load -- never assumed.
 
 This module is the lane's ONLY cross-lane surface: other lanes import
 `src.market.api` and nothing else. See `contracts/src/market.md` for the
@@ -22,7 +25,11 @@ quantile-shaped fixtures in tests), never by import, per lane discipline.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
+from datetime import date as _date, timedelta as _timedelta
+from itertools import combinations as _combinations
+from math import comb as _comb
 from typing import Literal, Sequence
 
 import numpy as np
@@ -128,6 +135,37 @@ ASSUMPTIONS: dict[str, Assumption] = {
             "plant register or capacity list in this session -- flag it wherever it is shown."
         ),
     ),
+    "cold_snap_temp_percentile": Assumption(
+        value=0.10,
+        unit="percentile (0-1)",
+        source="ASSUMED",
+        note=(
+            "A 'cold snap' is defined as the coldest 10% of intervals in the weather frame "
+            "supplied to correlation_structure(). GUESS: not taken from a DWD/BDEW cold-spell "
+            "definition -- it is a relative threshold chosen so the regime is always populated "
+            "for any fixture. Anything shown to a judge off this number must say so."
+        ),
+    ),
+    "peak_load_regime_percentile": Assumption(
+        value=0.90,
+        unit="percentile (0-1)",
+        source="ASSUMED",
+        note=(
+            "The 'peak load' regime is the top 10% of intervals by portfolio total load. "
+            "GUESS: a relative threshold, not a system-peak definition from a TSO."
+        ),
+    ),
+    "correlation_regime_flag_threshold": Assumption(
+        value=0.80,
+        unit="correlation (dimensionless)",
+        source="ASSUMED",
+        note=(
+            "Mean pairwise residual correlation at or above which correlation_structure() "
+            "flags a regime as 'correlation -> 1', i.e. the pool stops diversifying. GUESS: "
+            "0.8 is a judgement call, not a literature value; the flag is a prompt to look at "
+            "the measured number next to it, never a substitute for it."
+        ),
+    ),
 }
 
 
@@ -225,11 +263,851 @@ def firm_capacity(quantiles: pd.DataFrame, *, tau: float = 0.05, floor_kw: float
 
     out = quantiles[["t", "site_id"]].copy()
     out["firm_kw"] = firm_kw.to_numpy()
+
+    # Carry the whole marginal quantile curve through, not just the tau one.
+    # pool() aggregates *distributions*; given a single quantile per site it
+    # would have to invent a spread, and an invented spread would make the
+    # diversification benefit an assumption instead of a measurement. Each
+    # firm_q**_kw column is that quantile put through the same floor
+    # subtraction and zero-clip as firm_kw, so firm_q<tau>_kw == firm_kw.
+    curve = []
+    for col in quantiles.columns:
+        m = re.fullmatch(r"q(\d{2})", str(col))
+        if m:
+            curve.append((int(m.group(1)) / 100.0, str(col)))
+    curve.sort()
+    for tau_v, col in curve:
+        out[f"firm_q{int(round(tau_v * 100)):02d}_kw"] = (
+            (quantiles[col].fillna(0.0) - floor_kw).clip(lower=0.0).to_numpy()
+        )
+    out.attrs["marginal_quantile_taus"] = [tv for tv, _ in curve]
     out.attrs["floor_clamp_rate"] = float(floor_bound.mean()) if len(floor_bound) else 0.0
     out.attrs["nan_quantile_rate"] = float(nan_mask.mean()) if len(nan_mask) else 0.0
     out.attrs["negative_quantile_rate"] = float(negative_input.mean()) if len(negative_input) else 0.0
     out.attrs["lower_above_median_rate"] = lower_above_median_rate
     out.attrs["tau"] = tau
+    return out
+
+
+# ---------------------------------------------------------------------------
+# pooling: measured correlation, copula aggregation, diversification curve
+# ---------------------------------------------------------------------------
+#
+# The project's central claim lives here: aggregating imperfectly-correlated
+# sites yields a firm promise LARGER than the sum of the per-site conservative
+# quantiles. Three rules shape the implementation:
+#
+#   1. The dependence structure is *measured*, never assumed. `sum` is the
+#      naive lower bound; `empirical` and `gaussian_copula` aggregate the
+#      per-site marginal quantile curves through a dependence structure taken
+#      from residuals (either the caller's `correlation_structure` output, or
+#      measured from the firm frame itself). There is no "assumed rho"
+#      constant anywhere in this file, and independence is never assumed --
+#      independence flatters the answer exactly as much as perfect
+#      correlation damns it, and an over-stated firm capacity is a real
+#      penalty in settle().
+#   2. The diversification benefit is reported against the *sum of individual
+#      quantiles* -- a number this code did not choose -- never against an
+#      internal baseline.
+#   3. shortfall_rate is measured against realised load, never simulated from
+#      the same model that produced the promise. A rate derived from the
+#      promise's own generator proves nothing (the #24 penalty_bind_rate
+#      lesson, and CONVENTIONS.md "measure the physical quantity").
+
+# Monte-Carlo sizes. These are numerical parameters of the estimator, not
+# quantities the project quotes, so they are module constants rather than
+# ASSUMPTIONS entries. Draws are jittered-stratified (see _stratified_uniforms)
+# so the tail quantile is far more stable than plain i.i.d. sampling at the
+# same count; that matters because the whole result is a 5th percentile.
+_POOL_DRAWS = 8000
+_CURVE_DRAWS = 2000
+_CURVE_REPLICATES = 12
+_CHUNK_CELLS = 2_000_000
+
+# A pooled quantile below the sum of the per-site quantiles is impossible in
+# the population for any dependence structure this module can build, but the
+# *estimator* is a sample quantile, so it can land microscopically below in
+# the near-comonotonic regime where the true answer IS the sum. That is
+# floored to the sum and the frequency is reported (`sum_floor_bind_rate`).
+# A gap larger than this fraction of the sum is not estimator noise -- it is
+# an aggregation bug -- and raises instead of being floored away.
+_SUM_FLOOR_MATERIAL_REL = 0.20
+
+# ...but "fraction of the sum" has to mean a fraction of something the
+# portfolio actually sells. Judged against each timestamp's OWN sum, a single
+# near-zero interval (a small site whose 5th percentile lands close to its
+# floor) turns one kilowatt of Monte-Carlo noise into a 30% relative gap and
+# raises "aggregation bug" on a perfectly healthy portfolio -- reproducibly,
+# and hardest inside `diversification_curve`, which pools at the smaller
+# _CURVE_DRAWS. The denominator is therefore the larger of this timestamp's
+# sum and the portfolio's mean sum: a gap that matters is large next to what
+# the pool sells across the window, not only next to the one interval where
+# it sells least. Big timestamps keep their per-interval sensitivity.
+
+# Fewer rows than this inside a regime is not a regime, it is an anecdote.
+_MIN_REGIME_ROWS = 8
+
+
+def _curve_columns(df: pd.DataFrame) -> tuple[list[float], list[str]]:
+    """The per-site marginal quantile curve carried by a `firm_capacity` frame.
+
+    `firm_capacity` emits `firm_q05_kw … firm_q95_kw` alongside `firm_kw`;
+    pooling needs the whole curve, because aggregating *distributions* is the
+    entire point -- a single quantile per site cannot be aggregated without
+    inventing a spread, and an invented spread is an assumed answer.
+    """
+    found: list[tuple[float, str]] = []
+    for col in df.columns:
+        m = re.fullmatch(r"firm_q(\d{2})_kw", str(col))
+        if m:
+            found.append((int(m.group(1)) / 100.0, str(col)))
+    found.sort()
+    return [t for t, _ in found], [c for _, c in found]
+
+
+def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Great-circle distance in km (mean Earth radius 6371 km)."""
+    r = 6371.0
+    p1, p2 = np.radians(lat1), np.radians(lat2)
+    dphi = np.radians(lat2 - lat1)
+    dlmb = np.radians(lon2 - lon1)
+    a = np.sin(dphi / 2) ** 2 + np.cos(p1) * np.cos(p2) * np.sin(dlmb / 2) ** 2
+    return float(2 * r * np.arcsin(np.sqrt(min(1.0, a))))
+
+
+def _easter_sunday(year: int) -> _date:
+    """Anonymous Gregorian algorithm."""
+    a = year % 19
+    b, c = divmod(year, 100)
+    d, e = divmod(b, 4)
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i, k = divmod(c, 4)
+    lam = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * lam) // 451
+    month, day = divmod(h + lam - 7 * m + 114, 31)
+    return _date(year, month, day + 1)
+
+
+def _german_public_holidays(year: int) -> set:
+    """The nine nationwide German public holidays for `year`.
+
+    Nationwide only (state-specific days such as Fronleichnam are deliberately
+    excluded): a portfolio spanning several Bundeslaender should not have a
+    regime that applies to part of it. Reimplemented here rather than imported
+    from src/forecast because a lane may only import another lane's `api`
+    module, and that calendar is private to it.
+    """
+    easter = _easter_sunday(year)
+    return {
+        _date(year, 1, 1),                        # Neujahr
+        easter - _timedelta(days=2),              # Karfreitag
+        easter + _timedelta(days=1),              # Ostermontag
+        _date(year, 5, 1),                        # Tag der Arbeit
+        easter + _timedelta(days=39),             # Christi Himmelfahrt
+        easter + _timedelta(days=50),             # Pfingstmontag
+        _date(year, 10, 3),                       # Tag der Deutschen Einheit
+        _date(year, 12, 25),                      # 1. Weihnachtstag
+        _date(year, 12, 26),                      # 2. Weihnachtstag
+    }
+
+
+def _time_of_day_residuals(wide: pd.DataFrame) -> tuple[pd.DataFrame, float]:
+    """Remove each site's OWN time-of-day mean profile; return (residuals, rate).
+
+    Residuals, not raw load. Two depots that both fill up at 08:00 and empty at
+    18:00 are not thereby correlated in the way pooling cares about: that shape
+    is forecastable and is already inside each site's quantiles. What threatens
+    a pooled promise is the sites deviating from their own normal shape at the
+    same moment. Correlating raw load would report ~1.0 everywhere and
+    manufacture the result out of the daily commuter cycle.
+
+    A time-of-day bucket seen only once has a residual of exactly zero by
+    construction -- a coercion that silently deflates every correlation it
+    touches -- so the fraction of rows in such buckets is returned and surfaced
+    by the caller as `residual_degenerate_bucket_rate`.
+    """
+    idx = pd.DatetimeIndex(wide.index)
+    bucket = idx.hour * 60 + idx.minute
+    counts = pd.Series(bucket).value_counts()
+    degenerate = pd.Series(bucket).map(counts).to_numpy() < 2
+    resid = wide.sub(wide.groupby(bucket).transform("mean"))
+    rate = float(degenerate.mean()) if len(degenerate) else 0.0
+    return resid, rate
+
+
+def _pseudo_observations(resid: pd.DataFrame) -> pd.DataFrame:
+    """Rank-transform each site's residual series to (0, 1) -- the empirical copula."""
+    m = len(resid)
+    return resid.rank(axis=0, method="average") / (m + 1.0)
+
+
+def _correlation_from_residuals(resid: pd.DataFrame) -> pd.DataFrame:
+    flat = resid.std(axis=0, ddof=0)
+    dead = [str(s) for s, v in flat.items() if not np.isfinite(v) or v <= 1e-12]
+    if dead:
+        raise MarketError(
+            f"cannot measure correlation: site(s) {dead} have zero residual variation, so "
+            "their pairwise correlation is undefined. Pass an explicit `correlation=` "
+            "(from correlation_structure) rather than letting an undefined correlation be "
+            "silently treated as zero -- assumed independence overstates the pooled promise."
+        )
+    return resid.corr()
+
+
+def _nearest_psd(corr: np.ndarray) -> tuple[np.ndarray, float]:
+    """Project a correlation matrix onto the PSD cone; return (matrix, repair magnitude).
+
+    A measured correlation matrix with missing/regime-subset entries can come
+    back indefinite, and an indefinite matrix has no Cholesky factor. Clipping
+    the negative eigenvalues is a coercion, so its magnitude (the largest
+    negative eigenvalue removed, 0.0 when nothing was repaired) is returned and
+    surfaced as `correlation_psd_repair`.
+    """
+    sym = (corr + corr.T) / 2.0
+    vals, vecs = np.linalg.eigh(sym)
+    worst = float(min(vals.min(), 0.0))
+    if worst >= 0.0:
+        return sym, 0.0
+    vals = np.clip(vals, 0.0, None)
+    fixed = vecs @ np.diag(vals) @ vecs.T
+    d = np.sqrt(np.clip(np.diag(fixed), 1e-12, None))
+    fixed = fixed / np.outer(d, d)
+    np.fill_diagonal(fixed, 1.0)
+    return fixed, -worst
+
+
+def _stratified_uniforms(n_draws: int, n_dim: int, rng: np.random.Generator) -> np.ndarray:
+    """Jittered-stratified (Latin-hypercube) uniforms, shape (n_draws, n_dim).
+
+    Each dimension's draws cover [0, 1] one stratum apiece, jittered inside the
+    stratum by `rng`. The seed therefore genuinely changes the draw (different
+    seeds are independent) while the tail quantile has a fraction of the noise
+    of i.i.d. sampling -- which is what keeps the perfect-correlation boundary
+    case collapsing onto `sum` instead of wobbling around it.
+    """
+    out = np.empty((n_draws, n_dim), dtype=float)
+    base = np.arange(n_draws, dtype=float)
+    for j in range(n_dim):
+        out[:, j] = (base + rng.random(n_draws))[rng.permutation(n_draws)] / n_draws
+    return np.clip(out, 1e-12, 1.0 - 1e-12)
+
+
+def _gaussian_copula_uniforms(corr: np.ndarray, n_draws: int,
+                              rng: np.random.Generator) -> np.ndarray:
+    n = corr.shape[0]
+    z = norm.ppf(_stratified_uniforms(n_draws, n, rng))
+    jitter = 1e-9
+    chol = np.linalg.cholesky(corr + np.eye(n) * jitter)
+    return np.clip(norm.cdf(z @ chol.T), 1e-12, 1.0 - 1e-12)
+
+
+def _empirical_copula_uniforms(pseudo: np.ndarray, n_draws: int,
+                               rng: np.random.Generator) -> np.ndarray:
+    """Resample the observed joint ranks -- no parametric dependence assumption.
+
+    The observed rank vectors are resampled with a stratified position `s` in
+    [0, 1) rather than a uniform row index, and the sub-rank offset is shared
+    across sites within a draw. Under comonotonic residuals that makes the
+    first site's uniform exactly `s`, so the perfectly-correlated boundary case
+    reproduces `sum` rather than being smeared by resampling noise.
+    """
+    m, n = pseudo.shape
+    order = np.argsort(pseudo[:, 0], kind="stable")
+    ranks = np.clip(np.rint(pseudo * (m + 1.0)).astype(int) - 1, 0, m - 1)
+    s = _stratified_uniforms(n_draws, 1, rng)[:, 0]
+    idx = np.clip((s * m).astype(int), 0, m - 1)
+    frac = s * m - idx
+    rows = order[idx]
+    u = (ranks[rows, :] + frac[:, None]) / m
+    return np.clip(u, 1e-12, 1.0 - 1e-12)
+
+
+def _marginal_draws(vals: np.ndarray, u: np.ndarray, z_knots: np.ndarray) -> tuple[np.ndarray, int]:
+    """Invert one site's marginal quantile curve at uniforms `u`.
+
+    `vals` is (n_t, k): the site's firm_q**_kw curve at each timestamp.
+    Interpolation is linear in z = Phi^-1(tau) space, so the tails extrapolate
+    like a Normal instead of like a straight line in probability -- the tail is
+    where a 5th percentile lives, and linear-in-tau extrapolation there is
+    wildly optimistic. Draws below zero are clipped (a site cannot deliver
+    negative reduction) and the clip count is returned so the rate is
+    observable.
+    """
+    z = norm.ppf(u)
+    k = len(z_knots)
+    seg = np.clip(np.searchsorted(z_knots, z) - 1, 0, k - 2)
+    w = (z - z_knots[seg]) / (z_knots[seg + 1] - z_knots[seg])
+    lo = vals[:, seg]
+    hi = vals[:, seg + 1]
+    x = lo + (hi - lo) * w[None, :]
+    n_clipped = int(np.count_nonzero(x < 0.0))
+    return np.clip(x, 0.0, None), n_clipped
+
+
+def _matrix_to_mapping(mat: pd.DataFrame) -> dict:
+    """Square correlation frame -> nested plain dict.
+
+    Correlation matrices travel in `.attrs`, and pandas compares two frames'
+    `.attrs` with `==` whenever it finalises a concat (which `DataFrame.__repr__`
+    itself triggers on a wide frame). A DataFrame or ndarray in there makes that
+    comparison raise "truth value is ambiguous" -- i.e. merely *printing* the
+    returned frame would explode in a consumer lane. Plain nested dicts of
+    floats compare cleanly.
+    """
+    return {str(a): {str(b): float(mat.loc[a, b]) for b in mat.columns} for a in mat.index}
+
+
+def _mapping_to_matrix(mapping: dict, site_ids: list[str]) -> np.ndarray:
+    missing = [s for s in site_ids if s not in mapping]
+    if not missing:
+        missing = [b for a in site_ids for b in site_ids if b not in mapping[a]]
+    if missing:
+        raise MarketError(
+            f"the supplied correlation mapping is missing site(s) {sorted(set(missing))}; "
+            "refusing to assume a correlation for a site it does not cover"
+        )
+    return np.array([[float(mapping[a][b]) for b in site_ids] for a in site_ids], dtype=float)
+
+
+def _corr_matrix_from_arg(correlation: object, site_ids: list[str]) -> tuple[np.ndarray, str]:
+    """Accept a nested dict, a square correlation frame, or the pairwise frame."""
+    if isinstance(correlation, dict):
+        return _mapping_to_matrix(correlation, site_ids), "supplied:mapping"
+    if isinstance(correlation, pd.DataFrame) and {"site_a", "site_b", "correlation"} <= set(correlation.columns):
+        mat = pd.DataFrame(np.eye(len(site_ids)), index=site_ids, columns=site_ids)
+        seen = set()
+        for row in correlation.itertuples(index=False):
+            a, b = str(row.site_a), str(row.site_b)
+            if a in mat.index and b in mat.index:
+                mat.loc[a, b] = mat.loc[b, a] = float(row.correlation)
+                seen.add((a, b))
+        missing = [(a, b) for i, a in enumerate(site_ids) for b in site_ids[i + 1:]
+                   if (a, b) not in seen and (b, a) not in seen]
+        if missing:
+            raise MarketError(
+                f"the supplied correlation frame has no entry for pair(s) {missing[:5]}; a "
+                "missing pair must not default to zero correlation (that is assumed "
+                "independence, which overstates the pooled promise)"
+            )
+        return mat.to_numpy(dtype=float), "supplied:correlation_structure"
+    if isinstance(correlation, pd.DataFrame):
+        missing = [s for s in site_ids if s not in correlation.index or s not in correlation.columns]
+        if missing:
+            raise MarketError(
+                f"the supplied correlation matrix is missing site(s) {missing}; refusing to "
+                "assume a correlation for a site the matrix does not cover"
+            )
+        return correlation.loc[site_ids, site_ids].to_numpy(dtype=float), "supplied:matrix"
+    raise MarketError(
+        "correlation= must be a nested {site: {site: rho}} mapping, a square DataFrame "
+        "indexed by site_id, or the pairwise frame returned by correlation_structure; got "
+        f"{type(correlation).__name__}"
+    )
+
+
+def pool(firm: pd.DataFrame, *, method: Literal["sum", "empirical", "gaussian_copula"],
+         sites: Sequence[str] | None = None, seed: int = 0,
+         correlation: pd.DataFrame | dict | None = None,
+         n_draws: int | None = None) -> pd.DataFrame:
+    """t, pool_firm_kw -- the firm capacity of a *portfolio*.
+
+    `sum` is the naive lower bound: every site's own 5th percentile added up,
+    i.e. the portfolio priced as if every site had its worst day at the same
+    moment. `empirical` and `gaussian_copula` aggregate the per-site marginal
+    *distributions* (the `firm_q**_kw` curve `firm_capacity` carries) through a
+    measured dependence structure and take the pool's own tau-quantile. The gap
+    between them, reported in `.attrs['diversification_benefit_kw_mean']`
+    against the `sum` baseline, is the headline result.
+
+    Dependence is never assumed. Pass `correlation=` -- either
+    `correlation_structure`'s pairwise frame (recommended: its correlations are
+    fitted on realised-load residuals, and the frame carries the joint ranks
+    `empirical` needs) or a square matrix indexed by site_id. With no
+    `correlation=`, the structure is measured from the firm frame's own
+    residuals; a site with no residual variation raises rather than silently
+    contributing an independent (flattering) column.
+
+    A one-site pool returns that site's own firm_kw exactly: there is nothing
+    to aggregate, so the pool's tau-quantile IS the site's tau-quantile, and no
+    estimator is allowed near it.
+
+    Observability (`.attrs`): `sum_floor_bind_rate` / `sum_floor_max_gap_kw`
+    (how often, and by how much, the sample quantile landed under the naive
+    sum and was floored to it), `draw_clip_rate` (fraction of simulated site
+    draws clipped at zero), `correlation_psd_repair` (largest negative
+    eigenvalue removed from the measured matrix), `mean_pairwise_correlation`,
+    `correlation_source`, `n_draws`.
+    """
+    _require_columns(firm, ["t", "site_id", "firm_kw"])
+    if method not in ("sum", "empirical", "gaussian_copula"):
+        raise MarketError(
+            f"unknown pool method {method!r}; expected 'sum', 'empirical' or 'gaussian_copula'"
+        )
+
+    df = firm
+    if sites is not None:
+        wanted = [str(s) for s in sites]
+        known = set(df["site_id"].astype(str))
+        unknown = [s for s in wanted if s not in known]
+        if unknown:
+            raise MarketError(
+                f"pool(): site(s) {unknown} requested but absent from the firm frame; "
+                "refusing to pool a portfolio that silently lost members"
+            )
+        df = df[df["site_id"].astype(str).isin(wanted)]
+
+    if df["firm_kw"].isna().any():
+        raise MarketError(
+            "pool(): NaN firm_kw in the input; a missing per-site promise must be resolved, "
+            "never treated as zero (which understates) or dropped (which overstates)"
+        )
+
+    site_ids = sorted(str(s) for s in df["site_id"].unique())
+    n_sites = len(site_ids)
+    if n_sites == 0:
+        raise MarketError("pool(): no sites to pool")
+
+    ts = pd.DatetimeIndex(sorted(df["t"].unique()))
+    per_t_sites = df.groupby("t")["site_id"].nunique()
+    if not bool((per_t_sites == n_sites).all()):
+        bad = per_t_sites[per_t_sites != n_sites]
+        raise MarketError(
+            f"pool(): ragged panel -- {len(bad)} timestamp(s) do not carry all {n_sites} sites "
+            f"(first offender {bad.index[0]} has {int(bad.iloc[0])}). Pooling a subset of the "
+            "portfolio at some timestamps would understate those timestamps and silently "
+            "change what is being sold."
+        )
+
+    tau = float(firm.attrs.get("tau", 0.05))
+    sum_kw = df.groupby("t")["firm_kw"].sum().reindex(ts).to_numpy(dtype=float)
+
+    out = pd.DataFrame({"t": ts, "pool_firm_kw": sum_kw})
+    out.attrs["method"] = method
+    out.attrs["tau"] = tau
+    out.attrs["n_sites"] = n_sites
+    out.attrs["sites"] = site_ids
+    out.attrs["sum_firm_kw_mean"] = float(np.mean(sum_kw)) if len(sum_kw) else 0.0
+    out.attrs["diversification_benefit_kw_mean"] = 0.0
+    out.attrs["sum_floor_bind_rate"] = 0.0
+    out.attrs["sum_floor_max_gap_kw"] = 0.0
+    out.attrs["draw_clip_rate"] = 0.0
+    out.attrs["correlation_psd_repair"] = 0.0
+    out.attrs["single_site_exact"] = bool(n_sites == 1)
+
+    if method == "sum":
+        out.attrs["correlation_source"] = "none (naive lower bound)"
+        out.attrs["mean_pairwise_correlation"] = float("nan")
+        out.attrs["n_draws"] = 0
+        return out
+
+    if n_sites == 1:
+        # Exact, not estimated: the pool's tau-quantile is the site's own.
+        out.attrs["correlation_source"] = "none (single-site pool is exact)"
+        out.attrs["mean_pairwise_correlation"] = float("nan")
+        out.attrs["n_draws"] = 0
+        return out
+
+    taus, curve_cols = _curve_columns(df)
+    if len(taus) < 2:
+        raise MarketError(
+            f"pool(method={method!r}) needs the per-site marginal quantile curve "
+            "(firm_q05_kw … firm_q95_kw, as emitted by firm_capacity) to aggregate "
+            "distributions. Only a single quantile per site was supplied, and manufacturing "
+            "a spread around it would make the diversification benefit an assumption "
+            "rather than a measurement."
+        )
+
+    # dependence structure -------------------------------------------------
+    pseudo: np.ndarray | None = None
+    if correlation is not None:
+        corr_raw, corr_source = _corr_matrix_from_arg(correlation, site_ids)
+        if isinstance(correlation, pd.DataFrame):
+            po = correlation.attrs.get("pseudo_observations")
+            if isinstance(po, dict) and all(s in po for s in site_ids):
+                pseudo = np.column_stack([np.asarray(po[s], dtype=float) for s in site_ids])
+    else:
+        wide = df.pivot(index="t", columns="site_id", values="firm_kw").sort_index()
+        wide.columns = [str(c) for c in wide.columns]
+        wide = wide[site_ids]
+        resid, _degenerate = _time_of_day_residuals(wide)
+        corr_df = _correlation_from_residuals(resid)
+        corr_raw = corr_df.loc[site_ids, site_ids].to_numpy(dtype=float)
+        pseudo = _pseudo_observations(resid)[site_ids].to_numpy(dtype=float)
+        corr_source = "measured:firm_kw residuals"
+
+    if not np.isfinite(corr_raw).all():
+        raise MarketError(
+            "the correlation structure contains non-finite entries; a NaN correlation must "
+            "not reach the aggregation (NaN comparisons take the permissive branch silently)"
+        )
+    corr_psd, repair = _nearest_psd(np.clip(corr_raw, -1.0, 1.0))
+    off = ~np.eye(n_sites, dtype=bool)
+    out.attrs["correlation_source"] = corr_source
+    out.attrs["correlation_psd_repair"] = repair
+    out.attrs["mean_pairwise_correlation"] = float(corr_raw[off].mean())
+
+    if method == "empirical":
+        if pseudo is None:
+            raise MarketError(
+                "pool(method='empirical') needs the joint ranks, not just a correlation "
+                "matrix. Pass the frame returned by correlation_structure (it carries them in "
+                ".attrs['pseudo_observations']), or omit correlation= to measure them from the "
+                "firm frame; use method='gaussian_copula' if only a matrix is available."
+            )
+        if pseudo.shape[0] < 4:
+            raise MarketError(
+                f"pool(method='empirical') has only {pseudo.shape[0]} joint observation(s); "
+                "an empirical copula estimated from that is not evidence"
+            )
+
+    # marginal curves ------------------------------------------------------
+    mats = []
+    for col in curve_cols:
+        w = df.pivot(index="t", columns="site_id", values=col)
+        w.columns = [str(c) for c in w.columns]
+        w = w.reindex(index=ts)[site_ids]
+        if w.isna().any().any():
+            raise MarketError(f"pool(): missing {col} for at least one (t, site_id)")
+        mats.append(w.to_numpy(dtype=float))
+    cube = np.stack(mats, axis=0)  # (k, n_t, n_sites)
+    if bool((np.diff(cube, axis=0) < -1e-6).any()):
+        raise MarketError(
+            "pool(): a site's marginal quantile curve is not monotone in tau (a higher "
+            "quantile sits below a lower one). Refusing to silently sort it -- crossed "
+            "quantiles mean the upstream forecast is mislabelled or broken."
+        )
+
+    rng = np.random.default_rng(seed)
+    n_draws = _POOL_DRAWS if n_draws is None else int(n_draws)
+    if n_draws < 100:
+        raise MarketError(f"pool(): n_draws={n_draws} is too few to estimate a {tau:.0%} quantile")
+    if method == "gaussian_copula":
+        u = _gaussian_copula_uniforms(corr_psd, n_draws, rng)
+    else:
+        u = _empirical_copula_uniforms(pseudo, n_draws, rng)
+
+    z_knots = norm.ppf(np.asarray(taus, dtype=float))
+    n_t = len(ts)
+    step = max(1, int(_CHUNK_CELLS // max(n_draws, 1)))
+    pooled = np.empty(n_t, dtype=float)
+    n_clipped = 0
+    n_cells = 0
+    for start in range(0, n_t, step):
+        stop = min(start + step, n_t)
+        totals = np.zeros((stop - start, n_draws), dtype=float)
+        for i in range(n_sites):
+            vals = cube[:, start:stop, i].T  # (chunk, k)
+            x, c = _marginal_draws(vals, u[:, i], z_knots)
+            totals += x
+            n_clipped += c
+            n_cells += x.size
+        pooled[start:stop] = np.quantile(totals, tau, axis=1)
+
+    # The naive sum is the floor the contract guarantees. Report how often the
+    # sample quantile landed beneath it (only possible in the near-comonotonic
+    # regime, where the true answer IS the sum), and refuse to paper over a gap
+    # too large to be estimator noise.
+    gap = sum_kw - pooled
+    mean_abs_sum = float(np.mean(np.abs(sum_kw))) if n_t else 0.0
+    scale = np.maximum(np.maximum(np.abs(sum_kw), mean_abs_sum), 1.0)
+    material = gap / scale > _SUM_FLOOR_MATERIAL_REL
+    if bool(material.any()):
+        worst = int(np.argmax(gap / scale))
+        raise MarketError(
+            f"pool(method={method!r}) produced {pooled[worst]:.1f} kW at {ts[worst]}, "
+            f"{gap[worst] / scale[worst]:.1%} BELOW the naive sum of the per-site quantiles "
+            f"({sum_kw[worst]:.1f} kW). A gap that large is not estimator noise: it is either "
+            "an aggregation bug or genuine quantile non-subadditivity (a strongly left-skewed "
+            "marginal, where the contract's pool >= sum guarantee does not actually hold). "
+            "Either way it is refused rather than floored away silently, because floating it "
+            "up to the sum would sell a promise the aggregation says is not deliverable."
+        )
+    bind = gap > 0.0
+    out["pool_firm_kw"] = np.maximum(pooled, sum_kw)
+    out.attrs["sum_floor_bind_rate"] = float(bind.mean()) if n_t else 0.0
+    out.attrs["sum_floor_max_gap_kw"] = float(gap[bind].max()) if bool(bind.any()) else 0.0
+    out.attrs["draw_clip_rate"] = float(n_clipped / n_cells) if n_cells else 0.0
+    out.attrs["diversification_benefit_kw_mean"] = float(
+        np.mean(out["pool_firm_kw"].to_numpy() - sum_kw)
+    ) if n_t else 0.0
+    out.attrs["n_draws"] = n_draws
+    return out
+
+
+def correlation_structure(load: pd.DataFrame, sites: pd.DataFrame, *,
+                          weather: pd.DataFrame | None = None) -> pd.DataFrame:
+    """site_a, site_b, distance_km, correlation (+ per-regime columns).
+
+    Pairwise correlation of *residuals* -- load minus each site's own
+    time-of-day profile -- against great-circle distance from `sites`' lat/lon,
+    plus the fitted exponential decay length in `.attrs['decay_length_km']`.
+
+    Regimes where correlation runs toward 1 are flagged in
+    `.attrs['regime_flags']`: cold snaps (needs `weather` with `temp_c`),
+    German public holidays, and peak-load intervals. These are exactly the
+    hours the grid needs the pool and exactly the hours the pool is weakest, so
+    the flag is a deliverable, not a caveat: feed
+    `.attrs['correlation_matrix_by_regime'][regime]` back into `pool` to see
+    the pooled promise fall.
+
+    `.attrs` also carries `correlation_matrix` (baseline),
+    `pseudo_observations` (the joint ranks `pool(method='empirical')` consumes)
+    and `residual_degenerate_bucket_rate`.
+    """
+    _require_columns(load, ["t", "site_id", "load_kw"])
+    _require_columns(sites, ["site_id", "lat", "lon"])
+    if load["load_kw"].isna().any():
+        raise MarketError(
+            "correlation_structure(): NaN load_kw; a missing reading must not be pairwise-"
+            "dropped into a correlation estimated on a different sample per pair"
+        )
+
+    wide = load.pivot(index="t", columns="site_id", values="load_kw").sort_index()
+    wide.columns = [str(c) for c in wide.columns]
+    site_ids = sorted(wide.columns)
+    wide = wide[site_ids]
+    if len(site_ids) < 2:
+        raise MarketError("correlation_structure() needs at least two sites")
+    if wide.isna().any().any():
+        raise MarketError(
+            "correlation_structure(): the load panel is ragged (a site is missing rows some "
+            "other site has); align it before measuring correlation"
+        )
+
+    resid, degenerate_rate = _time_of_day_residuals(wide)
+    if degenerate_rate >= 1.0:
+        raise MarketError(
+            "correlation_structure(): every time-of-day bucket was seen exactly once, so all "
+            "residuals are identically zero and no correlation is measurable. Supply more "
+            "than one day of load."
+        )
+    base_corr = _correlation_from_residuals(resid)
+
+    idx = pd.DatetimeIndex(wide.index)
+    berlin_dates = idx.tz_convert("Europe/Berlin").date
+    years = {d.year for d in berlin_dates}
+    holidays: set = set()
+    for y in years:
+        holidays |= _german_public_holidays(y)
+
+    regimes: dict[str, np.ndarray] = {}
+    unavailable: dict[str, str] = {}
+
+    regimes["holiday"] = np.array([d in holidays for d in berlin_dates])
+
+    total = wide.sum(axis=1)
+    peak_pct = ASSUMPTIONS["peak_load_regime_percentile"].value
+    regimes["peak_load"] = (total >= total.quantile(peak_pct)).to_numpy()
+
+    if weather is None:
+        unavailable["cold_snap"] = "no weather frame supplied (needs t, temp_c)"
+    else:
+        _require_columns(weather, ["t", "temp_c"])
+        temp = weather.set_index("t")["temp_c"].reindex(idx)
+        if temp.isna().any():
+            raise MarketError(
+                "correlation_structure(): the weather frame does not cover every load "
+                "timestamp; a missing temperature must not be treated as 'not cold'"
+            )
+        cold_pct = ASSUMPTIONS["cold_snap_temp_percentile"].value
+        regimes["cold_snap"] = (temp <= temp.quantile(cold_pct)).to_numpy()
+
+    regime_corr: dict[str, pd.DataFrame] = {}
+    for name, mask in regimes.items():
+        if int(mask.sum()) < _MIN_REGIME_ROWS:
+            unavailable[name] = f"only {int(mask.sum())} interval(s) in regime (need {_MIN_REGIME_ROWS})"
+            continue
+        sub_resid, _ = _time_of_day_residuals(wide.loc[mask])
+        try:
+            regime_corr[name] = _correlation_from_residuals(sub_resid)
+        except MarketError as exc:
+            unavailable[name] = str(exc).split("\n")[0]
+
+    site_loc = sites.drop_duplicates("site_id").set_index("site_id")
+    missing_loc = [s for s in site_ids if s not in site_loc.index]
+    if missing_loc:
+        raise MarketError(f"correlation_structure(): no lat/lon for site(s) {missing_loc}")
+
+    rows = []
+    for i, a in enumerate(site_ids):
+        for b in site_ids[i + 1:]:
+            row = {
+                "site_a": a,
+                "site_b": b,
+                "distance_km": _haversine_km(
+                    float(site_loc.loc[a, "lat"]), float(site_loc.loc[a, "lon"]),
+                    float(site_loc.loc[b, "lat"]), float(site_loc.loc[b, "lon"]),
+                ),
+                "correlation": float(base_corr.loc[a, b]),
+            }
+            for name, cm in regime_corr.items():
+                row[f"correlation_{name}"] = float(cm.loc[a, b])
+                row[f"{name}_increase"] = float(cm.loc[a, b]) - row["correlation"]
+            rows.append(row)
+    out = pd.DataFrame(rows)
+
+    # exponential decay fit: corr ~ exp(-d / L)
+    fit = out[(out["correlation"] > 1e-6) & np.isfinite(out["distance_km"])]
+    if len(fit) >= 2 and fit["distance_km"].nunique() > 1:
+        slope, _intercept = np.polyfit(fit["distance_km"].to_numpy(),
+                                       np.log(fit["correlation"].to_numpy()), 1)
+        decay_km = float(-1.0 / slope) if slope < 0 else float("inf")
+    else:
+        decay_km = float("nan")
+
+    off = ~np.eye(len(site_ids), dtype=bool)
+    baseline_mean = float(base_corr.to_numpy()[off].mean())
+    threshold = ASSUMPTIONS["correlation_regime_flag_threshold"].value
+    flags = {}
+    for name, cm in regime_corr.items():
+        mean_corr = float(cm.to_numpy()[off].mean())
+        flags[name] = {
+            "mean_correlation": mean_corr,
+            "baseline_mean_correlation": baseline_mean,
+            "increase": mean_corr - baseline_mean,
+            "n_intervals": int(regimes[name].sum()),
+            "flagged": bool(mean_corr >= threshold and mean_corr > baseline_mean),
+        }
+
+    out.attrs["decay_length_km"] = decay_km
+    out.attrs["decay_fit_pairs"] = int(len(fit))
+    out.attrs["correlation_matrix"] = _matrix_to_mapping(base_corr)
+    out.attrs["correlation_matrix_by_regime"] = {
+        name: _matrix_to_mapping(cm) for name, cm in regime_corr.items()
+    }
+    out.attrs["pseudo_observations"] = {
+        s: [float(v) for v in _pseudo_observations(resid)[s].to_numpy()] for s in site_ids
+    }
+    out.attrs["baseline_mean_correlation"] = baseline_mean
+    out.attrs["regime_flags"] = flags
+    out.attrs["regimes_unavailable"] = unavailable
+    out.attrs["residual_degenerate_bucket_rate"] = degenerate_rate
+    out.attrs["assumptions_used"] = [
+        "peak_load_regime_percentile",
+        "correlation_regime_flag_threshold",
+    ] + (["cold_snap_temp_percentile"] if weather is not None else [])
+    return out
+
+
+def diversification_curve(firm: pd.DataFrame, *, sizes: Sequence[int], seed: int,
+                          realised: pd.DataFrame | None = None,
+                          correlation: pd.DataFrame | None = None,
+                          method: Literal["empirical", "gaussian_copula"] = "gaussian_copula",
+                          ) -> pd.DataFrame:
+    """n_sites, firm_kw_per_site, shortfall_rate -- the curve src/ui animates.
+
+    For each portfolio size, subsets of that many sites are pooled and
+    `firm_kw_per_site` is the mean pooled promise divided by the size: every
+    subset of that size when there are at most `_CURVE_REPLICATES` of them
+    (`.attrs['exhaustive_sizes']` lists those), otherwise that many seeded
+    random subsets. It rises with `n_sites` exactly to the extent the
+    sites are imperfectly correlated -- that rise IS the claim.
+
+    `shortfall_rate` is measured, not asserted: `realised` (t, site_id,
+    realised_kw -- the reduction the sites actually had available) is required,
+    and the rate is the fraction of intervals where the subset's realised total
+    fell below the promise made for it. Simulating the shortfall from the same
+    copula that produced the promise would guarantee ~tau by construction and
+    prove nothing, which is why `realised` has no default.
+
+    Monotonicity is reported, never enforced: `.attrs['monotone_in_n_sites']`
+    and `.attrs['monotonicity_violations']` say whether the curve actually
+    rises, so a portfolio that does not diversify says so instead of being
+    smoothed into the claim.
+    """
+    _require_columns(firm, ["t", "site_id", "firm_kw"])
+    if realised is None:
+        raise MarketError(
+            "diversification_curve() requires `realised` (t, site_id, realised_kw): "
+            "shortfall_rate must be measured against realised load. Deriving it from the "
+            "same distribution that produced the promise would make it ~tau by construction "
+            "-- a number that cannot move is not evidence."
+        )
+    _require_columns(realised, ["t", "site_id", "realised_kw"])
+    if realised["realised_kw"].isna().any():
+        raise MarketError("diversification_curve(): NaN realised_kw; a missing realisation "
+                          "must not be scored as either a hit or a shortfall")
+
+    site_ids = sorted(str(s) for s in firm["site_id"].unique())
+    n_avail = len(site_ids)
+    wanted = [int(s) for s in sizes]
+    bad = [s for s in wanted if s < 1 or s > n_avail]
+    if bad:
+        raise MarketError(
+            f"diversification_curve(): size(s) {bad} are outside 1..{n_avail} available sites; "
+            "silently truncating a requested size would plot a point the portfolio cannot "
+            "support under a label saying it can"
+        )
+
+    realised_wide = realised.pivot(index="t", columns="site_id", values="realised_kw").sort_index()
+    realised_wide.columns = [str(c) for c in realised_wide.columns]
+
+    rng = np.random.default_rng(seed)
+    rows = []
+    n_shortfall_intervals = 0
+    exhaustive_sizes: list[int] = []
+    for n in wanted:
+        per_site = []
+        shortfalls = []
+        # `firm_kw_per_site` is an average over subsets of this size. Where the
+        # portfolio has few enough subsets, average over ALL of them: with a
+        # handful of unequally-sized sites, 12 random subsets is a wildly noisy
+        # estimate of that average -- a 5-site fixture moved the n=1 point by
+        # +-50% on the seed alone, swamping the diversification signal it is
+        # supposed to show and making the curve #30 animates a function of the
+        # seed. Enumerating is the exact answer, not a smoothing of the noisy
+        # one; sampling is kept only where enumeration is infeasible.
+        if _comb(n_avail, n) <= _CURVE_REPLICATES:
+            exhaustive_sizes.append(n)
+            reps = [sorted(c) for c in _combinations(site_ids, n)]
+        else:
+            reps = [sorted(rng.choice(site_ids, size=n, replace=False).tolist())
+                    for _ in range(_CURVE_REPLICATES)]
+        for rep, subset in enumerate(reps):
+            pooled = pool(firm, method=method, sites=subset, seed=seed + rep,
+                          correlation=correlation, n_draws=_CURVE_DRAWS)
+            promise = pooled.set_index("t")["pool_firm_kw"]
+            per_site.append(float(promise.mean()) / n)
+
+            missing = [s for s in subset if s not in realised_wide.columns]
+            if missing:
+                raise MarketError(
+                    f"diversification_curve(): no realised_kw for site(s) {missing}; a promise "
+                    "with no realisation to check it against cannot be scored"
+                )
+            actual = realised_wide[subset].sum(axis=1).reindex(promise.index)
+            if actual.isna().any():
+                raise MarketError(
+                    "diversification_curve(): realised_kw does not cover every timestamp the "
+                    "promise was made for; an unscored interval must not count as a hit"
+                )
+            short = (actual.to_numpy() < promise.to_numpy() - 1e-9)
+            n_shortfall_intervals += int(short.sum())
+            shortfalls.append(float(short.mean()))
+        rows.append({
+            "n_sites": n,
+            "firm_kw_per_site": float(np.mean(per_site)),
+            "shortfall_rate": float(np.mean(shortfalls)),
+        })
+
+    out = pd.DataFrame(rows, columns=["n_sites", "firm_kw_per_site", "shortfall_rate"])
+    ordered = out.sort_values("n_sites")
+    diffs = np.diff(ordered["firm_kw_per_site"].to_numpy())
+    violations = [
+        (int(ordered["n_sites"].iloc[i]), int(ordered["n_sites"].iloc[i + 1]), float(d))
+        for i, d in enumerate(diffs) if d < -1e-9
+    ]
+    out.attrs["method"] = method
+    out.attrs["seed"] = seed
+    out.attrs["replicates"] = _CURVE_REPLICATES
+    out.attrs["exhaustive_sizes"] = exhaustive_sizes
+    out.attrs["n_draws"] = _CURVE_DRAWS
+    out.attrs["monotone_in_n_sites"] = bool(not violations)
+    out.attrs["monotonicity_violations"] = violations
+    out.attrs["shortfall_intervals_observed"] = n_shortfall_intervals
+    out.attrs["tau"] = float(firm.attrs.get("tau", 0.05))
     return out
 
 
