@@ -28,6 +28,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import date as _date, timedelta as _timedelta
+from itertools import combinations as _combinations
+from math import comb as _comb
 from typing import Literal, Sequence
 
 import numpy as np
@@ -330,6 +332,17 @@ _CHUNK_CELLS = 2_000_000
 # A gap larger than this fraction of the sum is not estimator noise -- it is
 # an aggregation bug -- and raises instead of being floored away.
 _SUM_FLOOR_MATERIAL_REL = 0.20
+
+# ...but "fraction of the sum" has to mean a fraction of something the
+# portfolio actually sells. Judged against each timestamp's OWN sum, a single
+# near-zero interval (a small site whose 5th percentile lands close to its
+# floor) turns one kilowatt of Monte-Carlo noise into a 30% relative gap and
+# raises "aggregation bug" on a perfectly healthy portfolio -- reproducibly,
+# and hardest inside `diversification_curve`, which pools at the smaller
+# _CURVE_DRAWS. The denominator is therefore the larger of this timestamp's
+# sum and the portfolio's mean sum: a gap that matters is large next to what
+# the pool sells across the window, not only next to the one interval where
+# it sells least. Big timestamps keep their per-interval sensitivity.
 
 # Fewer rows than this inside a regime is not a regime, it is an anecdote.
 _MIN_REGIME_ROWS = 8
@@ -797,7 +810,8 @@ def pool(firm: pd.DataFrame, *, method: Literal["sum", "empirical", "gaussian_co
     # regime, where the true answer IS the sum), and refuse to paper over a gap
     # too large to be estimator noise.
     gap = sum_kw - pooled
-    scale = np.maximum(np.abs(sum_kw), 1.0)
+    mean_abs_sum = float(np.mean(np.abs(sum_kw))) if n_t else 0.0
+    scale = np.maximum(np.maximum(np.abs(sum_kw), mean_abs_sum), 1.0)
     material = gap / scale > _SUM_FLOOR_MATERIAL_REL
     if bool(material.any()):
         worst = int(np.argmax(gap / scale))
@@ -984,9 +998,11 @@ def diversification_curve(firm: pd.DataFrame, *, sizes: Sequence[int], seed: int
                           ) -> pd.DataFrame:
     """n_sites, firm_kw_per_site, shortfall_rate -- the curve src/ui animates.
 
-    For each portfolio size, `_CURVE_REPLICATES` seeded random subsets of that
-    many sites are pooled; `firm_kw_per_site` is the mean pooled promise
-    divided by the size. It rises with `n_sites` exactly to the extent the
+    For each portfolio size, subsets of that many sites are pooled and
+    `firm_kw_per_site` is the mean pooled promise divided by the size: every
+    subset of that size when there are at most `_CURVE_REPLICATES` of them
+    (`.attrs['exhaustive_sizes']` lists those), otherwise that many seeded
+    random subsets. It rises with `n_sites` exactly to the extent the
     sites are imperfectly correlated -- that rise IS the claim.
 
     `shortfall_rate` is measured, not asserted: `realised` (t, site_id,
@@ -1031,11 +1047,25 @@ def diversification_curve(firm: pd.DataFrame, *, sizes: Sequence[int], seed: int
     rng = np.random.default_rng(seed)
     rows = []
     n_shortfall_intervals = 0
+    exhaustive_sizes: list[int] = []
     for n in wanted:
         per_site = []
         shortfalls = []
-        for rep in range(_CURVE_REPLICATES):
-            subset = sorted(rng.choice(site_ids, size=n, replace=False).tolist())
+        # `firm_kw_per_site` is an average over subsets of this size. Where the
+        # portfolio has few enough subsets, average over ALL of them: with a
+        # handful of unequally-sized sites, 12 random subsets is a wildly noisy
+        # estimate of that average -- a 5-site fixture moved the n=1 point by
+        # +-50% on the seed alone, swamping the diversification signal it is
+        # supposed to show and making the curve #30 animates a function of the
+        # seed. Enumerating is the exact answer, not a smoothing of the noisy
+        # one; sampling is kept only where enumeration is infeasible.
+        if _comb(n_avail, n) <= _CURVE_REPLICATES:
+            exhaustive_sizes.append(n)
+            reps = [sorted(c) for c in _combinations(site_ids, n)]
+        else:
+            reps = [sorted(rng.choice(site_ids, size=n, replace=False).tolist())
+                    for _ in range(_CURVE_REPLICATES)]
+        for rep, subset in enumerate(reps):
             pooled = pool(firm, method=method, sites=subset, seed=seed + rep,
                           correlation=correlation, n_draws=_CURVE_DRAWS)
             promise = pooled.set_index("t")["pool_firm_kw"]
@@ -1072,6 +1102,7 @@ def diversification_curve(firm: pd.DataFrame, *, sizes: Sequence[int], seed: int
     out.attrs["method"] = method
     out.attrs["seed"] = seed
     out.attrs["replicates"] = _CURVE_REPLICATES
+    out.attrs["exhaustive_sizes"] = exhaustive_sizes
     out.attrs["n_draws"] = _CURVE_DRAWS
     out.attrs["monotone_in_n_sites"] = bool(not violations)
     out.attrs["monotonicity_violations"] = violations
