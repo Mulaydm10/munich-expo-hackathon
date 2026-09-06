@@ -1,0 +1,58 @@
+[
+  {
+    "t": "2026-10-24T22:00:00+00:00",
+    "baseline_load_kw": 310.0,
+    "optimised_load_kw": 214.0,
+    "envelope_kw": 640.0,
+    "firm_kw": 96.0,
+    "price_eur_mwh": 41.2
+  },
+  {
+    "t": "2026-10-24T22:15:00+00:00",
+    "baseline_load_kw": 322.5,
+    "optimised_load_kw": 208.5,
+    "envelope_kw": 640.0,
+    "firm_kw": 96.0,
+    "price_eur_mwh": 39.75
+  },
+  {
+    "t": "2026-10-24T23:00:00+00:00",
+    "baseline_load_kw": 356.0,
+    "optimised_load_kw": 240.0,
+    "envelope_kw": 640.0,
+    "firm_kw": 96.0,
+    "price_eur_mwh": 35.1
+  },
+  {
+    "t": "2026-10-25T00:00:00+00:00",
+    "baseline_load_kw": 401.5,
+    "optimised_load_kw": 268.0,
+    "envelope_kw": 640.0,
+    "firm_kw": 120.0,
+    "price_eur_mwh": 28.4
+  },
+  {
+    "t": "2026-10-25T01:00:00+00:00",
+    "baseline_load_kw": 388.0,
+    "optimised_load_kw": 262.5,
+    "envelope_kw": 640.0,
+    "firm_kw": 120.0,
+    "price_eur_mwh": 24.05
+  },
+  {
+    "t": "2026-10-25T02:00:00+00:00",
+    "baseline_load_kw": 366.0,
+    "optimised_load_kw": 251.0,
+    "envelope_kw": 640.0,
+    "firm_kw": 120.0,
+    "price_eur_mwh": 22.8
+  },
+  {
+    "t": "2026-10-25T03:00:00+00:00",
+    "baseline_load_kw": 298.0,
+    "optimised_load_kw": 233.0,
+    "envelope_kw": 610.0,
+    "firm_kw": 120.0,
+    "price_eur_mwh": 31.6
+  }
+]

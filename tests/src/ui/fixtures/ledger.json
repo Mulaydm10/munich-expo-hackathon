@@ -1,0 +1,52 @@
+{
+  "totals": {
+    "energy_cost_eur": 18422.61,
+    "capacity_revenue_eur": 26140.0,
+    "penalty_eur": 7.05,
+    "net_eur": 7710.34,
+    "co2_kg_saved": 4021.7,
+    "peak_kw_baseline": 41250.0,
+    "peak_kw_optimised": 33180.0,
+    "pool_firm_mw": 28.015,
+    "peakers_displaced": 0.5603
+  },
+  "scorecard": {
+    "energy_cost_eur": 18422.61,
+    "unmet_kwh": 0.0,
+    "deadline_misses": 0,
+    "envelope_violation_kwh": 0.0,
+    "floor_shortfall_kw_min": 58.75,
+    "peak_kw": 33180.0
+  },
+  "calibration": {
+    "0.05": 0.9482,
+    "0.10": 0.8971
+  },
+  "penalty_multiplier": 3.0,
+  "penalty_multiplier_source": "ASSUMED -- recollection of regelleistung.net's post-2020 harmonised tender rules; the non-delivery penalty_multiplier=3.0x the prevailing energy price is invented outright, not looked up anywhere.",
+  "assumptions": {
+    "peaker_plant_capacity_mw": {
+      "value": 50.0,
+      "unit": "MW",
+      "source": "ASSUMED",
+      "note": "Typical small OCGT peaking-plant unit size, used only for the 'peakers displaced' headline count in peakers_displaced(). GUESS: not looked up against a specific plant register or capacity list in this session -- flag it wherever it is shown."
+    },
+    "grid_carbon_intensity_g_kwh": {
+      "value": 380.0,
+      "unit": "gCO2/kWh",
+      "source": "UBA, Strommix Deutschland 2025, table 3 (retrieved 2026-08-14)",
+      "note": "Annual mean; the scenario uses the hourly canonical series where present."
+    }
+  },
+  "products": {
+    "aFRR": {
+      "name": "aFRR",
+      "block_length_min": 240.0,
+      "min_bid_kw": 1000.0,
+      "granularity_kw": 1000.0,
+      "notice_period_min": 5.0,
+      "penalty_multiplier": 3.0,
+      "source": "ASSUMED -- recollection of regelleistung.net's post-2020 harmonised tender rules; NOT re-verified against a live source in this session."
+    }
+  }
+}

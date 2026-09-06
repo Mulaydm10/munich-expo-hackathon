@@ -1,0 +1,180 @@
+/* FlexGrid UI — the whole stylesheet. No preprocessor, no framework, no web font:
+   contracts/src/ui.md requires the page to load with the API reachable and nothing
+   else, and a font that fails to load on conference wifi is a blank projector.
+
+   Sizing target: readable from three metres. Base 20px, never below 16px, and every
+   number is set in a tabular-figure system font so columns line up. */
+
+:root {
+  --ink: #10161c;
+  --ink-soft: #414d58;
+  --paper: #fbfaf7;
+  --rule: #c8ccd2;
+  --warn-bg: #fff3d4;
+  --warn-edge: #b57f00;
+  --error-bg: #ffe3e0;
+  --error-edge: #b3261e;
+  --assumed-bg: #ffeccc;
+  --assumed-edge: #8a5300;
+  --baseline: #6a6f76;
+  --optimised: #0b6ea8;
+  --envelope: #2f7d4f;
+  --floor: #7a3fa8;
+  --price: #a8500b;
+}
+
+html { color-scheme: light; }
+
+body {
+  margin: 0;
+  padding: 0 2rem 4rem;
+  background: var(--paper);
+  color: var(--ink);
+  font: 20px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- chrome -------------------------------------------------------------- */
+
+.topbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.5rem;
+  align-items: baseline;
+  padding: 1rem 0;
+  border-bottom: 3px solid var(--ink);
+}
+
+.brand { margin: 0; font-size: 1.4rem; font-weight: 800; letter-spacing: 0.04em; }
+
+.screen-nav { display: flex; gap: 1.25rem; margin: 0; padding: 0; list-style: none; }
+.screen-nav a { color: var(--optimised); }
+.screen-nav .is-current span { font-weight: 800; text-decoration: underline 3px; }
+
+.kbd-hint { margin: 0 0 0 auto; color: var(--ink-soft); font-size: 0.9rem; }
+
+kbd {
+  border: 1px solid var(--rule);
+  border-bottom-width: 3px;
+  border-radius: 4px;
+  padding: 0 0.35em;
+  background: #fff;
+  font-family: inherit;
+  font-size: 0.85em;
+}
+
+.screen-title { font-size: 2.1rem; margin: 1.25rem 0 0.5rem; }
+.screen-lede { font-size: 1.05rem; }
+.note { color: var(--ink-soft); font-size: 0.95rem; }
+.page-footer { margin-top: 3rem; border-top: 1px solid var(--rule); color: var(--ink-soft); font-size: 0.9rem; }
+
+/* ---- honest failure states ----------------------------------------------- */
+
+/* An error is never a chart of zeros. It gets the whole screen. */
+.banner-error {
+  border: 4px solid var(--error-edge);
+  background: var(--error-bg);
+  padding: 1.5rem 2rem;
+  margin: 2rem 0;
+}
+.banner-kicker { margin: 0 0 0.5rem; font-weight: 800; letter-spacing: 0.08em; }
+.banner-error-code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1.3rem; margin: 0.25rem 0; }
+.banner-note { color: var(--ink-soft); }
+
+/* A missing figure is visually unlike any number, so it can never be misread as 0. */
+.value-missing {
+  font-style: italic;
+  color: var(--error-edge);
+  border-bottom: 2px dotted var(--error-edge);
+}
+.empty-note {
+  border-left: 6px solid var(--warn-edge);
+  background: var(--warn-bg);
+  padding: 0.75rem 1rem;
+}
+
+/* warnings[] is rendered, never swallowed — top of page, full width, always open. */
+.warnings {
+  border: 3px solid var(--warn-edge);
+  background: var(--warn-bg);
+  padding: 1rem 1.5rem;
+  margin: 1.5rem 0;
+}
+.warnings h2 { margin: 0 0 0.25rem; font-size: 1.25rem; }
+.warnings-lede { margin: 0 0 0.5rem; color: var(--ink-soft); }
+.warnings ul { margin: 0; padding-left: 1.25rem; }
+.warning-item { margin: 0.35rem 0; }
+.warning-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: #fff;
+  border: 1px solid var(--warn-edge);
+  border-radius: 3px;
+  padding: 0 0.35em;
+  margin-right: 0.5em;
+}
+.warning-value { font-weight: 700; margin-left: 0.5em; }
+.warnings-empty { color: var(--ink-soft); }
+
+/* ---- provenance ---------------------------------------------------------- */
+
+.provenance { font-size: 0.85rem; }
+/* "assumed" is marked by weight and a box as well as colour — never colour alone. */
+.provenance-assumed {
+  background: var(--assumed-bg);
+  border: 2px solid var(--assumed-edge);
+  border-radius: 3px;
+  padding: 0 0.4em;
+  font-weight: 700;
+  color: var(--assumed-edge);
+}
+.provenance-sourced { color: var(--ink-soft); }
+.provenance-missing { color: var(--error-edge); font-weight: 700; }
+.assumed-flag { color: var(--assumed-edge); }
+.assumption-row.is-assumed th { border-left: 6px solid var(--assumed-edge); padding-left: 0.5rem; }
+
+.caveat { color: var(--assumed-edge); font-size: 0.9rem; }
+.caveat-block {
+  border-left: 6px solid var(--assumed-edge);
+  padding: 0.75rem 1rem;
+  background: var(--assumed-bg);
+}
+
+/* ---- tables -------------------------------------------------------------- */
+
+table { border-collapse: collapse; margin: 1.5rem 0; width: 100%; max-width: 70rem; }
+caption { text-align: left; font-weight: 700; padding-bottom: 0.5rem; }
+th, td { border-bottom: 1px solid var(--rule); padding: 0.5rem 0.75rem; text-align: left; vertical-align: top; }
+thead th { border-bottom: 3px solid var(--ink); }
+.figure-value { font-size: 1.15rem; font-weight: 700; white-space: nowrap; }
+.unit { font-weight: 400; color: var(--ink-soft); margin-left: 0.25em; }
+.assumption-note { font-size: 0.85rem; color: var(--ink-soft); }
+.figure-headline { font-size: 1.6rem; }
+.figure-basis { display: block; font-size: 0.95rem; color: var(--ink-soft); }
+
+/* ---- canvases and controls ----------------------------------------------- */
+
+canvas { width: 100%; height: auto; background: #fff; border: 2px solid var(--ink); display: block; }
+figcaption { font-size: 0.95rem; color: var(--ink-soft); padding-top: 0.5rem; max-width: 70rem; }
+
+button {
+  font: inherit;
+  font-weight: 700;
+  padding: 0.6rem 1.2rem;
+  border: 3px solid var(--ink);
+  border-radius: 6px;
+  background: #fff;
+  cursor: pointer;
+}
+button:hover, button:focus-visible { background: var(--optimised); color: #fff; }
+
+.map-controls, .day-controls, .pooling-controls {
+  display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; margin: 1rem 0;
+}
+.dispatch-button { font-size: 1.3rem; }
+.play-clock, .map-readout, .pooling-readout {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 1.2rem;
+  min-width: 12rem;
+}
+input[type="range"] { width: min(30rem, 60vw); }
+.kbd-inline { font-weight: 400; }

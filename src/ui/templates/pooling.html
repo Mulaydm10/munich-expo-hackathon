@@ -1,0 +1,100 @@
+{% extends "_base.html" %}
+{% import "_macros.html" as m %}
+
+{# Screen 4 of DEMO.md: /api/scenario/{id}/pooling, i.e. src/market's
+   diversification_curve rows -- n_sites, firm_kw_per_site, shortfall_rate. The
+   project's central claim is that the safe promise PER SITE rises with portfolio size
+   while the shortfall rate stays flat. Both numbers come from the API row by row; this
+   page fits nothing, smooths nothing and extrapolates nothing. #}
+
+{% block content %}
+{% call m.screen_body(error) %}
+
+{% if curve %}
+<section class="screen-lede">
+  <p data-testid="curve-count">
+    <strong>{{ curve | length }}</strong> portfolio sizes returned by
+    <code>/api/scenario/{id}/pooling</code>. Each row is one
+    <code>diversification_curve</code> point from <code>src/market</code>.
+  </p>
+</section>
+
+<div class="pooling-controls">
+  <label for="n-sites-slider">Portfolio size (sites)</label>
+  <input type="range" id="n-sites-slider" data-testid="n-sites-slider"
+         min="0" max="{{ curve | length - 1 }}" step="1" value="{{ curve | length - 1 }}">
+  <output id="n-sites-readout" class="pooling-readout" data-testid="n-sites-readout"></output>
+</div>
+
+<figure class="pooling-figure">
+  <canvas id="pooling-canvas" class="pooling-canvas" width="1400" height="700"
+          data-testid="pooling-canvas" role="img"
+          aria-label="Safe promise per site in kW rising with portfolio size, against the shortfall rate in percent"></canvas>
+  <figcaption>
+    Left axis: safe promise <strong>per site</strong>, in <strong>kW</strong> (solid,
+    circles). Right axis: <strong>shortfall rate, in %</strong> (dashed, squares).
+    The claim is the solid line rising while the dashed line stays flat.
+  </figcaption>
+</figure>
+
+<table class="curve-table" data-testid="curve-table">
+  <caption>Every row of the curve, as returned — the chart above draws exactly these</caption>
+  <thead>
+    <tr>
+      <th scope="col">Sites</th>
+      <th scope="col">Safe promise per site</th>
+      <th scope="col">Shortfall rate</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in curve %}
+    <tr data-testid="curve-row-{{ loop.index0 }}">
+      <th scope="row">
+        {% if has_value(row, "n_sites") %}{{ row.n_sites | num(0) }}{% else %}<span class="value-missing">{{ MISSING_LABEL }}</span>{% endif %}
+      </th>
+      <td>
+        {% if has_value(row, "firm_kw_per_site") %}
+        {{ row.firm_kw_per_site | num(2) }} <span class="unit">kW</span>
+        {% else %}
+        <span class="value-missing" data-testid="missing-firm_kw_per_site-{{ loop.index0 }}">{{ MISSING_LABEL }}</span>
+        {% endif %}
+      </td>
+      <td>
+        {% if has_value(row, "shortfall_rate") %}
+        {{ row.shortfall_rate | rate(2) }}
+        {% else %}
+        <span class="value-missing" data-testid="missing-shortfall_rate-{{ loop.index0 }}">{{ MISSING_LABEL }}</span>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+{% if pool_method %}
+<p class="note" data-testid="pool-method">
+  Pooling method: <code>{{ pool_method }}</code>.
+  <code>sum</code> is the naive lower bound — each site's own worst case added up;
+  <code>empirical</code> and <code>gaussian_copula</code> take the pool's own
+  percentile. The gap between them is the diversification benefit.
+</p>
+{% else %}
+<p class="note value-missing" data-testid="pool-method-missing">
+  Pooling method {{ MISSING_LABEL }} — the curve above cannot be attributed to a
+  method, so do not quote it as the diversification benefit.
+</p>
+{% endif %}
+
+{{ m.payload_json("curve", curve) }}
+{% else %}
+{{ m.empty_note("pooling curve") }}
+{% endif %}
+
+{% endcall %}
+{% endblock %}
+
+{% block scripts %}
+{% if curve and not error %}
+<script type="module" src="{{ STATIC }}/screen-pooling.js"></script>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,103 @@
+{% extends "_base.html" %}
+{% import "_macros.html" as m %}
+
+{# Screen 3 of DEMO.md: press d, the TSO calls, POST /api/scenario/{id}/dispatch, then
+   show promised vs delivered and the vans still finishing on time.
+
+   The one thing this screen must not do (contracts/CONVENTIONS.md, "Measure the
+   physical quantity, not the derived one"): present src/sched's reduction_kw_achieved
+   as a portfolio total. It is a per-(site, interval) worst-interval floor. It is shown
+   here because hiding it would be worse, but it is shown with that sentence attached
+   and it is never added up. #}
+
+{% block content %}
+{% call m.screen_body(error) %}
+
+<section class="screen-lede">
+  <button type="button" id="dispatch" class="dispatch-button" data-testid="dispatch-button"
+          aria-keyshortcuts="d"
+          {% if dispatch_url %}data-dispatch-url="{{ dispatch_url }}"{% endif %}>
+    Dispatch the reduction <span class="kbd-inline"><kbd>d</kbd></span>
+  </button>
+  {% if not dispatch_url %}
+  <p class="value-missing" data-testid="dispatch-url-missing">
+    No dispatch URL provided by API — the button cannot fire. This is a missing route
+    parameter, not a scenario with nothing to dispatch.
+  </p>
+  {% endif %}
+</section>
+
+{% if dispatch %}
+<table class="figures" data-testid="dispatch-figures">
+  <caption>Promised vs delivered, as returned by
+    <code>POST /api/scenario/{id}/dispatch</code></caption>
+  <thead><tr><th scope="col">Figure</th><th scope="col">Value</th><th scope="col">Note</th></tr></thead>
+  <tbody>
+    {{ m.figure("Promised (sold to the TSO)", dispatch, "promised_kw", 1) }}
+    {{ m.figure("Delivered (amended schedule)", dispatch, "delivered_kw", 1) }}
+    {{ m.figure("Shortfall", dispatch, "shortfall_kwh", 2) }}
+    {{ m.figure("Penalty incurred", dispatch, "penalty_eur", 2) }}
+    {{ m.figure("Worst-interval reduction floor", dispatch, "reduction_kw_achieved", 1) }}
+  </tbody>
+</table>
+
+<table class="figures" data-testid="vans-figures">
+  <caption>The vans — every session still has to finish</caption>
+  <thead><tr><th scope="col">Figure</th><th scope="col">Value</th><th scope="col">Note</th></tr></thead>
+  <tbody>
+    {{ m.figure("Sessions in the scenario", dispatch, "sessions_total", 0) }}
+    {{ m.figure("Sessions finishing on time", dispatch, "sessions_on_time", 0) }}
+    {{ m.figure("Deadline misses", dispatch, "deadline_misses", 0) }}
+    {{ m.figure("Energy left undelivered", dispatch, "unmet_kwh", 2) }}
+  </tbody>
+</table>
+
+<p class="caveat caveat-block" data-testid="no-portfolio-total">
+  There is deliberately no single “the pool delivered X” headline on this screen.
+  <code>reduction_kw_achieved</code> is a {{ PER_INTERVAL_FLOOR_CAVEAT }}; adding it
+  across sites and intervals would report intent rather than effect.
+</p>
+
+{% if dispatch.event is defined and dispatch.event %}
+<p class="event-line" data-testid="dispatch-event">
+  Event: {{ dispatch.event.start_t | berlin }} → {{ dispatch.event.end_t | berlin }}
+  (Europe/Berlin),
+  {% if has_value(dispatch.event, "required_kw") %}
+  requested <strong>{{ dispatch.event.required_kw | num(1) }}</strong> <span class="unit">kW</span>
+  {% else %}
+  requested reduction <span class="value-missing" data-testid="missing-required_kw">{{ MISSING_LABEL }}</span>
+  {% endif %}
+</p>
+{% endif %}
+
+{% if amended_intervals %}
+<figure class="day-figure">
+  <canvas id="call-canvas" class="day-canvas" width="1400" height="600"
+          data-testid="call-canvas" role="img"
+          aria-label="Site load in kW before and after the dispatched reduction, with the requested reduction window shaded"></canvas>
+  <figcaption>
+    Solid: the amended schedule. Dashed: the schedule before the call. Shaded band:
+    the reduction window. Power in <strong>kW</strong>, time in
+    <strong>Europe/Berlin</strong>.
+  </figcaption>
+</figure>
+{{ m.payload_json("amended", amended_intervals) }}
+{% else %}
+{{ m.empty_note("amended interval") }}
+{% endif %}
+
+{% else %}
+<p class="empty-note" data-testid="dispatch-pending">
+  No reduction has been dispatched yet. Press <kbd>d</kbd>.
+  <strong>Nothing on this screen is a result until the API has answered.</strong>
+</p>
+{% endif %}
+
+{% endcall %}
+{% endblock %}
+
+{% block scripts %}
+{% if not error %}
+<script type="module" src="{{ STATIC }}/screen-call.js"></script>
+{% endif %}
+{% endblock %}

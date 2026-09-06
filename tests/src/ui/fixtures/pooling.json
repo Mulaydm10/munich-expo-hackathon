@@ -1,0 +1,27 @@
+[
+  {
+    "n_sites": 1,
+    "firm_kw_per_site": 12.4,
+    "shortfall_rate": 0.0491
+  },
+  {
+    "n_sites": 5,
+    "firm_kw_per_site": 24.85,
+    "shortfall_rate": 0.0503
+  },
+  {
+    "n_sites": 20,
+    "firm_kw_per_site": 38.1,
+    "shortfall_rate": 0.0498
+  },
+  {
+    "n_sites": 100,
+    "firm_kw_per_site": 49.62,
+    "shortfall_rate": 0.0496
+  },
+  {
+    "n_sites": 500,
+    "firm_kw_per_site": 56.03,
+    "shortfall_rate": 0.0502
+  }
+]
