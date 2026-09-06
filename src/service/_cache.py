@@ -179,6 +179,12 @@ class JobRegistry:
         job.thread = thread  # type: ignore[attr-defined]
         return job
 
+    def forget(self, scenario_id: str) -> None:
+        """Drop a job so a repeat request starts a fresh run rather than replaying a
+        recorded failure for the rest of the process's life."""
+        with self._lock:
+            self._by_scenario.pop(scenario_id, None)
+
     def clear(self) -> None:
         with self._lock:
             self._by_scenario.clear()

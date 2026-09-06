@@ -335,14 +335,25 @@ async def post_scenario(request: Request) -> JSONResponse:
     job = cache.JOBS.get(spec.id)
     if job is not None and job.status == "failed":
         payload, status = job.error, job.error_status
-        cache.JOBS._by_scenario.pop(spec.id, None)  # a repeat POST retries rather than sticking
+        cache.JOBS.forget(spec.id)  # a repeat POST retries rather than sticking on the failure
         return JSONResponse(status_code=status, content=payload)
     if job is None or job.status == "done":
         job = cache.JOBS.start(
-            spec.id, lambda progress: pipeline.build(spec, root=root, progress=progress)[0],
-            root=root,
+            spec.id, lambda progress: _build_and_keep(spec, root, progress), root=root
         )
     return JSONResponse(status_code=202, content=job.to_dict())
+
+
+def _build_and_keep(spec: ScenarioSpec, root: Path, progress) -> dict:
+    """Run the pipeline for a cold POST and keep the in-process state `/dispatch` needs.
+
+    Without this the background job would discard `live`, and the first `/dispatch` after
+    a cold run would re-run every model in the pipeline behind an HTTP request -- the one
+    thing issue #28 says a route must never do.
+    """
+    doc, live = pipeline.build(spec, root=root, progress=progress)
+    _LIVE[spec.id] = live
+    return doc
 
 
 def _doc_or_404(scenario_id: str) -> dict:
@@ -563,11 +574,21 @@ async def dispatch(scenario_id: str, request: Request) -> JSONResponse:
     except ValueError as exc:
         raise BadSpec(str(exc), "see src.sched.ReductionEvent for the accepted values") from exc
 
-    before = pipeline._by_t(
+    scheduled_before = pipeline._by_t(
         pipeline._schedule_to_load(live.optimised), "load_kw", live.grid_index
     )
-    after = pipeline._by_t(pipeline._schedule_to_load(amended), "load_kw", live.grid_index)
-    reduction = (before - after).reindex(live.grid_index)
+    scheduled_after = pipeline._by_t(
+        pipeline._schedule_to_load(amended), "load_kw", live.grid_index
+    )
+    # The delivered figure is the diff over the sites `src/sched` actually scheduled. The
+    # sites it could not are added to *both* reported curves (they charge the same either
+    # way), so the rows show the whole portfolio while the measurement stays on what moved.
+    unscheduled = live.unscheduled_by_t
+    if unscheduled is None:
+        unscheduled = pd.Series(0.0, index=live.grid_index)
+    before = scheduled_before + unscheduled
+    after = scheduled_after + unscheduled
+    reduction = (scheduled_before - scheduled_after).reindex(live.grid_index)
     in_window = reduction.loc[window]
 
     delivered_worst = float(in_window.min())

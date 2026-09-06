@@ -110,6 +110,11 @@ class LiveScenario:
     sessions_day: pd.DataFrame
     prices_day: pd.DataFrame
     baseline_by_t: pd.Series
+    #: portfolio load of the sites `src/sched` could not schedule, per interval. It is
+    #: identical before and after a dispatch (nothing amends it), so it is added to both
+    #: reported curves and cancels out of the delivered diff -- which is the point: the
+    #: rows show the whole portfolio, the measurement stays on what actually moved.
+    unscheduled_by_t: pd.Series | None = None
     warnings: list = field(default_factory=list)
 
 
@@ -347,7 +352,8 @@ def build(spec: ScenarioSpec, *, root=None, progress=None) -> tuple[dict, LiveSc
             "sessions_outside_day_grid",
             "src/service",
             f"{n_truncated} session(s) start before or end after the scenario day and are "
-            "not scheduled; their energy is absent from the optimised totals",
+            "never offered to the solver; they are carried at their uncontrolled baseline "
+            "in the optimised curve (see `energy_not_optimised` for the share)",
             count=int(n_truncated),
             total_sessions=int(len(sessions)),
         )
@@ -391,14 +397,52 @@ def build(spec: ScenarioSpec, *, root=None, progress=None) -> tuple[dict, LiveSc
 
     # -- sched --------------------------------------------------------------
     step(0.80, "sched:schedule")
-    optimised, scorecard, sched_warning = _schedule(spec, sessions_day, envelope, prices_day, warns)
+    baseline_day = base_load[(base_load["t"] >= day_start) & (base_load["t"] < day_end)]
+    baseline_by_t = _by_t(baseline_day, "load_kw", day_index)
+    optimised, scorecard, _unscheduled_sites = _schedule(
+        spec, sessions_day, envelope, prices_day, baseline_day, warns
+    )
 
     # -- market: money and carbon -------------------------------------------
     step(0.90, "market:settle")
-    baseline_day = base_load[(base_load["t"] >= day_start) & (base_load["t"] < day_end)]
-    baseline_by_t = _by_t(baseline_day, "load_kw", day_index)
-    optimised_load = _schedule_to_load(optimised)
-    optimised_by_t = _by_t(optimised_load, "load_kw", day_index) if optimised is not None else None
+    # Both curves must describe the same physical set of charging sessions, or the
+    # comparison flatters us for free: every session the optimiser did not place --
+    # because its site was infeasible, or because it straddles the day boundary and was
+    # never offered to the solver -- keeps charging exactly as it does today, so its
+    # uncontrolled load is carried into the optimised curve too. What is left between
+    # the two curves is then only the scheduling of what was actually scheduled
+    # (contracts/CONVENTIONS.md, "measure the physical quantity, not the derived one").
+    scheduled_ids = (
+        set(pd.Series(optimised["session_id"]).unique()) if optimised is not None else set()
+    )
+    unplaced = sessions[~sessions["session_id"].isin(scheduled_ids)]
+    residual_day = None
+    if len(unplaced):
+        residual = to_load(unplaced, freq="15min", policy="asap")
+        residual = residual.copy()
+        residual["t"] = pd.DatetimeIndex(residual["t"])
+        residual_day = residual[
+            (residual["t"] >= day_start) & (residual["t"] < day_end)
+        ].reset_index(drop=True)
+    optimised_load = _splice(_schedule_to_load(optimised), residual_day)
+    optimised_by_t = (
+        _by_t(optimised_load, "load_kw", day_index) if optimised_load is not None else None
+    )
+
+    # The one number that says how much of the "optimised" curve was optimised at all.
+    baseline_kwh = _energy_kwh(baseline_day)
+    residual_kwh = _energy_kwh(residual_day)
+    warns.rate(
+        "energy_not_optimised",
+        "src/service",
+        "share of the day's charging energy the optimiser never placed (an infeasible "
+        "site, or a session straddling the day boundary); it is carried at its "
+        "uncontrolled baseline in the optimised curve, so the two curves cover the same "
+        "sessions and the difference between them is only what was actually scheduled",
+        (residual_kwh / baseline_kwh) if baseline_kwh else None,
+        residual_kwh=_f(residual_kwh),
+        baseline_kwh=_f(baseline_kwh),
+    )
 
     totals = _totals(
         spec=spec,
@@ -446,6 +490,9 @@ def build(spec: ScenarioSpec, *, root=None, progress=None) -> tuple[dict, LiveSc
         sessions_day=sessions_day,
         prices_day=prices_day,
         baseline_by_t=baseline_by_t,
+        unscheduled_by_t=(
+            _by_t(residual_day, "load_kw", day_index) if residual_day is not None else None
+        ),
         warnings=warns.as_list(),
     )
     step(1.0, "done")
@@ -507,15 +554,35 @@ def _fleet_density_warning(base_load, span_index, sites, warns) -> None:
     A sparse frame is reported, never repaired: design's note on #34 is explicit that a
     reindex-and-fill workaround in a consuming lane hides the defect. Everything
     downstream then sees the frame as it really is.
+
+    The dense grid is measured over the span the frame *itself* covers, not over the
+    scenario span: `to_load()`'s grid runs from the first arrival to the last departure,
+    so a portfolio whose first car plugs in at 07:00 legitimately has no 00:00 row on
+    day -10, and counting those as missing would fire this warning on every healthy run
+    -- a warning that always fires measures nothing. The site axis is taken from the
+    requested portfolio (independent of the frame), so a site missing outright is still
+    caught.
     """
-    expected = len(span_index) * len(sites)
+    if base_load is None or not len(base_load):
+        warns.add(
+            "fleet_load_sparse",
+            "src/fleet",
+            "to_load() returned no rows at all for this portfolio's scenario window",
+            rows=0,
+            expected_rows=int(len(span_index) * len(sites)),
+            missing_rate=1.0,
+        )
+        return
+    times = pd.DatetimeIndex(pd.Series(base_load["t"]).unique()).sort_values()
+    covered = pd.date_range(times.min(), times.max(), freq="15min", tz="UTC")
+    expected = len(covered) * len(sites)
     actual = int(len(base_load))
     if actual < expected:
         warns.add(
             "fleet_load_sparse",
             "src/fleet",
-            f"to_load() returned {actual} rows where the dense (interval x site) grid has "
-            f"{expected}; missing rows are left missing, not filled",
+            f"to_load() returned {actual} rows where the dense (interval x site) grid over "
+            f"the span it covers has {expected}; missing rows are left missing, not filled",
             rows=actual,
             expected_rows=int(expected),
             missing_rate=float((expected - actual) / expected) if expected else 0.0,
@@ -671,8 +738,42 @@ def _pooling(spec, firm, day_index, warns):
     return pool_day, rows
 
 
-def _schedule(spec, sessions_day, envelope, prices_day, warns):
-    """The optimised schedule and `src/sched`'s own scorecard.
+def _energy_kwh(load_kw: pd.DataFrame | None) -> float | None:
+    """kWh under a `t, site_id, load_kw` frame, using each interval's own length.
+
+    The interval length is inferred from the sorted unique timestamps, never a
+    hard-coded /4 (contracts/CONVENTIONS.md); the final interval repeats the previous
+    gap, the same rule `src/sched` uses.
+    """
+    if load_kw is None or not len(load_kw):
+        return 0.0
+    times = pd.DatetimeIndex(pd.Series(load_kw["t"]).unique()).sort_values()
+    if len(times) < 2:
+        hours = pd.Series(0.25, index=times)
+    else:
+        gaps = times.to_series().diff().shift(-1)
+        gaps.iloc[-1] = gaps.iloc[-2]
+        hours = gaps.dt.total_seconds() / 3600.0
+    per_row = pd.DatetimeIndex(load_kw["t"]).map(hours)
+    return float((load_kw["load_kw"].to_numpy(dtype=float) * np.asarray(per_row, dtype=float)).sum())
+
+
+def _schedule(spec, sessions_day, envelope, prices_day, baseline_day, warns):
+    """The optimised schedule and `src/sched`'s own scorecard, solved **per site**.
+
+    `contracts/src/service.md` names "infeasible site" as a `warnings[]` case, so one
+    site whose sessions cannot be scheduled must not null out the whole scenario:
+    `src/sched.schedule()` raises on the first infeasible site in a call, so this lane
+    calls it once per site and keeps the sites that solve. (`schedule()` decomposes per
+    site internally, so a per-site call poses the same problem, not a weaker one.)
+
+    An infeasible site is **not** dropped from the portfolio: the caller splices its
+    uncontrolled baseline load back into the optimised curve, because a site the
+    optimiser cannot schedule still charges -- it charges exactly as it does today.
+    Dropping it would shrink the optimised portfolio against a full-portfolio baseline
+    and make every peak and cost figure flatter us for free.
+
+    Returns `(schedule | None, scorecard | None, unscheduled site_ids)`.
 
     `commitments=()` deliberately: `Commitment` carries no `site_id` and
     `src/sched.schedule()` applies every commitment to every site in the call, so a
@@ -690,17 +791,60 @@ def _schedule(spec, sessions_day, envelope, prices_day, warns):
         "commitment.",
         commitments=0,
     )
-    try:
-        optimised = sched.schedule(sessions_day, envelope, prices_day, commitments=(), solver="lp")
-    except sched.Infeasible as exc:
+    site_ids = sorted(str(s) for s in pd.Series(envelope["site_id"]).unique())
+    frames, kept_sessions, infeasible = [], [], []
+    for site_id in site_ids:
+        site_sessions = sessions_day[sessions_day["site_id"] == site_id]
+        if site_sessions.empty:
+            continue
+        site_envelope = envelope[envelope["site_id"] == site_id]
+        try:
+            frames.append(
+                sched.schedule(
+                    site_sessions, site_envelope, prices_day, commitments=(), solver="lp"
+                )
+            )
+        except sched.Infeasible as exc:
+            infeasible.append((site_id, str(exc)))
+            continue
+        kept_sessions.append(site_sessions)
+
+    unscheduled = [site_id for site_id, _ in infeasible]
+    if infeasible:
+        fallback_load = baseline_day[baseline_day["site_id"].isin(unscheduled)]
         warns.add(
             "schedule_infeasible",
             "src/sched",
-            f"no schedule satisfies every hard constraint: {exc}",
-            binding=str(exc),
+            f"{len(infeasible)} of {len(site_ids)} site(s) have no schedule satisfying "
+            "every hard constraint; each is carried at its uncontrolled baseline load in "
+            "the optimised curve rather than dropped from the portfolio",
+            rate=float(len(infeasible) / len(site_ids)) if site_ids else 0.0,
+            sites=unscheduled,
+            baseline_energy_kwh=_f(_energy_kwh(fallback_load)),
+            binding={site_id: message for site_id, message in infeasible},
         )
-        return None, None, str(exc)
-    scorecard = sched.evaluate(optimised, sessions_day, envelope, prices_day, ())
+
+    if not frames:
+        return None, None, unscheduled
+
+    # `.attrs` is dropped before concat and rebuilt below: each per-site frame carries
+    # its own sessions/envelope/prices frames in `.attrs`, and pandas compares attrs
+    # across the inputs (which raises on DataFrame values) before merging them.
+    for frame in frames:
+        frame.attrs = {}
+    optimised = pd.concat(frames, ignore_index=True)
+    scheduled_sessions = pd.concat(kept_sessions, ignore_index=True)
+    scheduled_envelope = envelope[envelope["site_id"].isin(set(scheduled_sessions["site_id"]))]
+    # `src.sched.dispatch()` reads the problem back off `.attrs` and `pd.concat` does not
+    # carry them; rebuild them over the union so /dispatch amends the same problem.
+    optimised.attrs.update(
+        sessions=scheduled_sessions,
+        envelope=scheduled_envelope,
+        prices=prices_day,
+        commitments=(),
+        solver="lp",
+    )
+    scorecard = sched.evaluate(optimised, scheduled_sessions, scheduled_envelope, prices_day, ())
     scorecard = {k: _f(v) if isinstance(v, (int, float, np.generic)) else v
                  for k, v in scorecard.items()}
     for key, message in (
@@ -710,7 +854,15 @@ def _schedule(spec, sessions_day, envelope, prices_day, warns):
         ("floor_shortfall_kw_min", "the optimised schedule breaks a sold reduction floor"),
     ):
         warns.rate("scorecard_" + key, "src/sched", message + f" ({key})", scorecard.get(key))
-    return optimised, scorecard, None
+    return optimised, scorecard, unscheduled
+
+
+def _splice(optimised_load, fallback_load) -> pd.DataFrame | None:
+    """The optimised curve plus the unscheduled sites' baseline rows, in one frame."""
+    parts = [f for f in (optimised_load, fallback_load) if f is not None and len(f)]
+    if not parts:
+        return optimised_load if optimised_load is not None else fallback_load
+    return pd.concat([f[["t", "site_id", "load_kw"]] for f in parts], ignore_index=True)
 
 
 def _schedule_to_load(optimised) -> pd.DataFrame | None:

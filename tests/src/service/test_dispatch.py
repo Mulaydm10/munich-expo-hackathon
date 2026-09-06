@@ -1,0 +1,243 @@
+"""`POST /api/scenario/{id}/dispatch`: promised vs delivered, measured not asserted.
+
+The route reports two numbers side by side and never merges them:
+
+* `delivered_reduction_kw_worst_interval` -- measured here as a diff of the committed and
+  amended portfolio schedules over the compliance window;
+* `sched_reduction_kw_achieved` -- `src/sched`'s own figure, forwarded verbatim. Issue
+  #28 is explicit that #27 is open and unfixed, so this lane must surface it next to the
+  physical measurement rather than average it into a headline.
+
+The most important test in this module is the one where the two disagree.
+"""
+
+from __future__ import annotations
+
+import pandas as pd
+import pytest
+
+from src.sched import api as sched
+from src.service import _pipeline as pipeline
+from src.service import api as service
+
+from .conftest import DAY, FEASIBLE, WITH_INFEASIBLE_SITE, day_index, warm
+
+from .test_errors import assert_error_shape
+
+
+def an_event(call_t, *, notice_min=0, duration_min=60, reduction_kw=5.0) -> dict:
+    return {
+        "call_t": call_t,
+        "notice_min": notice_min,
+        "duration_min": duration_min,
+        "reduction_kw": reduction_kw,
+    }
+
+
+def scheduled_load(scenario_id):
+    """The portfolio load of the sites `src/sched` actually scheduled, per interval."""
+    live = service._LIVE[scenario_id]
+    return pipeline._by_t(
+        pipeline._schedule_to_load(live.optimised), "load_kw", live.grid_index
+    )
+
+
+# ---------------------------------------------------------------------------
+# the shape of the answer
+# ---------------------------------------------------------------------------
+
+
+def test_dispatch_returns_the_amended_timeseries_and_both_measurements(client):
+    result = warm(client, FEASIBLE)
+    call_t = day_index()[70].isoformat()
+    body = client.post(
+        f"/api/scenario/{result['id']}/dispatch", json=an_event(call_t)
+    ).json()
+
+    assert {
+        "promised_reduction_kw",
+        "delivered_reduction_kw_worst_interval",
+        "delivered_reduction_kw_mean",
+        "shortfall_kw",
+        "sched_reduction_kw_achieved",
+        "rows",
+        "warnings",
+        "compliance_window",
+    } <= set(body)
+    assert body["promised_reduction_kw"] == 5.0
+    assert len(body["rows"]) == len(day_index())
+    for row in body["rows"]:
+        assert {"t", "load_kw_committed", "load_kw_amended", "reduction_kw",
+                "in_compliance_window"} <= set(row)
+        assert row["reduction_kw"] == pytest.approx(
+            row["load_kw_committed"] - row["load_kw_amended"], abs=1e-9
+        )
+    # a 60-minute window on the native 15-minute grid is exactly four intervals
+    assert body["compliance_window"]["intervals"] == 4
+    assert sum(row["in_compliance_window"] for row in body["rows"]) == 4
+
+
+def test_the_compliance_window_starts_after_the_notice_period(client):
+    result = warm(client, FEASIBLE)
+    call_t = day_index()[40]
+    body = client.post(
+        f"/api/scenario/{result['id']}/dispatch",
+        json=an_event(call_t.isoformat(), notice_min=30, duration_min=30),
+    ).json()
+    window = [row["t"] for row in body["rows"] if row["in_compliance_window"]]
+    assert window == [
+        (call_t + pd.Timedelta(minutes=30)).isoformat(),
+        (call_t + pd.Timedelta(minutes=45)).isoformat(),
+    ]
+    assert body["compliance_window"]["start"] == window[0]
+
+
+# ---------------------------------------------------------------------------
+# delivered is a diff of two schedules, not a forwarded flag
+# ---------------------------------------------------------------------------
+
+
+def test_delivered_is_measured_from_the_schedules_even_when_sched_claims_otherwise(
+    client, monkeypatch
+):
+    """The regression this project keeps hitting: a metric read off the solver's own
+    success flag instead of the physical state.
+
+    `src/sched.dispatch` is replaced by one that sheds a known 4 kW while *claiming*
+    12 kW on `.attrs['reduction_kw_achieved']`. The route must report 4 (it diffs the two
+    schedules) and still forward the 12 beside it, unmerged.
+    """
+    result = warm(client, FEASIBLE)
+    scenario_id = result["id"]
+
+    # The shed is deliberately uneven across the window: 4 kW in its first interval and
+    # 8 kW in the other two. A firm promise is only as good as its worst interval, so the
+    # delivered figure must be 4 -- the 6.67 kW mean would flatter the same call by 67%.
+    worst_shed_kw, rest_shed_kw = 4.0, 8.0
+    load = scheduled_load(scenario_id)
+    runs = [
+        i
+        for i in range(len(load) - 2)
+        if (load.iloc[i : i + 3] > rest_shed_kw + 1.0).all()
+    ]
+    assert runs, "the fixture has no run of scheduled load to shed from"
+    call_t = load.index[runs[0]]
+    window_end = call_t + pd.Timedelta(minutes=45)
+
+    real_dispatch = sched.dispatch
+
+    def fake_dispatch(schedule, event):
+        amended = schedule.copy()
+        amended.attrs = dict(schedule.attrs)
+        first = amended["t"] == call_t
+        rest = (amended["t"] > call_t) & (amended["t"] < window_end)
+        amended.loc[first, "power_kw"] = amended.loc[first, "power_kw"] - worst_shed_kw
+        amended.loc[rest, "power_kw"] = amended.loc[rest, "power_kw"] - rest_shed_kw
+        amended.attrs["reduction_kw_achieved"] = 12.0  # a lie, of exactly the #27 shape
+        amended.attrs["reduction_shortfall_kw"] = 0.0
+        return amended
+
+    monkeypatch.setattr(sched, "dispatch", fake_dispatch)
+    body = client.post(
+        f"/api/scenario/{scenario_id}/dispatch",
+        json=an_event(call_t.isoformat(), duration_min=45, reduction_kw=12.0),
+    ).json()
+    monkeypatch.setattr(sched, "dispatch", real_dispatch)
+
+    assert body["delivered_reduction_kw_worst_interval"] == pytest.approx(worst_shed_kw)
+    assert body["delivered_reduction_kw_mean"] == pytest.approx(
+        (worst_shed_kw + 2 * rest_shed_kw) / 3
+    )
+    # the shortfall is measured against the worst interval, never against the mean
+    assert body["shortfall_kw"] == pytest.approx(12.0 - worst_shed_kw)
+    # forwarded, beside the measurement -- never summed or averaged into it
+    assert body["sched_reduction_kw_achieved"] == 12.0
+    assert "dispatch_under_delivered" in [w["code"] for w in body["warnings"]]
+
+
+def test_an_undelivered_call_is_reported_and_a_zero_call_is_not(client):
+    """Both ends of the shortfall warning, on the real `src/sched.dispatch`.
+
+    Today the amended schedule sheds nothing at all (the thermal envelope sits far above
+    the charging load, so tightening it by the called kW does not bind). That is reported
+    as a full shortfall rather than as delivery -- the failure mode being guarded against
+    is a route that reports success because nothing checked the delivery path.
+    """
+    result = warm(client, FEASIBLE)
+    call_t = scheduled_load(result["id"]).idxmax().isoformat()
+
+    called = client.post(
+        f"/api/scenario/{result['id']}/dispatch", json=an_event(call_t, reduction_kw=5.0)
+    ).json()
+    assert called["delivered_reduction_kw_worst_interval"] == 0.0
+    assert called["shortfall_kw"] == pytest.approx(5.0)
+    assert "dispatch_under_delivered" in [w["code"] for w in called["warnings"]]
+    # src/sched's own figure agrees that nothing was shed, so neither number is inventing
+    assert called["sched_reduction_kw_achieved"] == 0.0
+
+    not_called = client.post(
+        f"/api/scenario/{result['id']}/dispatch", json=an_event(call_t, reduction_kw=0.0)
+    ).json()
+    assert not_called["shortfall_kw"] == 0.0
+    assert "dispatch_under_delivered" not in [w["code"] for w in not_called["warnings"]]
+
+
+def test_the_unscheduled_sites_appear_in_the_rows_but_not_in_the_measurement(client):
+    """The sites `src/sched` could not schedule charge identically before and after, so
+    they belong in the reported curves and must cancel out of the delivered diff."""
+    degraded = warm(client, WITH_INFEASIBLE_SITE)
+    call_t = day_index()[70]
+    body = client.post(
+        f"/api/scenario/{degraded['id']}/dispatch", json=an_event(call_t.isoformat())
+    ).json()
+    committed = {row["t"]: row["load_kw_committed"] for row in body["rows"]}
+    scheduled = scheduled_load(degraded["id"])
+    at_peak = scheduled.idxmax().isoformat()
+    assert committed[at_peak] > scheduled.max(), (
+        "the committed curve is missing the unscheduled sites' load"
+    )
+    assert all(row["reduction_kw"] >= -1e-9 for row in body["rows"])
+
+
+# ---------------------------------------------------------------------------
+# rejected calls
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "body,because",
+    [
+        ({"notice_min": 0, "duration_min": 60, "reduction_kw": 1.0}, "call_t is missing"),
+        (an_event(f"{DAY}T12:00:00"), "call_t is naive"),
+        (an_event("not-a-time"), "call_t is not a timestamp"),
+        (an_event(f"{DAY}T12:00:00+00:00", duration_min=0), "a zero-length window caps nothing"),
+        (an_event(f"{DAY}T12:00:00+00:00", notice_min=-5), "negative notice"),
+        (an_event(f"{DAY}T12:00:00+00:00", reduction_kw=-1.0), "a negative reduction"),
+        ({**an_event(f"{DAY}T12:00:00+00:00"), "site_id": "x"}, "an unknown field"),
+        (an_event("2026-06-01T12:00:00+00:00"), "a window outside the scenario day"),
+    ],
+)
+def test_a_malformed_reduction_event_is_a_400(client, body, because):
+    result = warm(client, FEASIBLE)
+    response = client.post(f"/api/scenario/{result['id']}/dispatch", json=body)
+    payload = assert_error_shape(response, status=400)
+    assert payload["error"] == "bad_spec", because
+
+
+def test_dispatching_a_scenario_with_no_feasible_schedule_is_an_error_not_a_zero(
+    client,
+):
+    """Every site infeasible means there is nothing to dispatch against; answering 200
+    with a delivered figure of 0.0 would be indistinguishable from a call that delivered
+    nothing."""
+    body = {"date": DAY, "site_ids": ["BY-80339-bbbb0002"], "seed": 7}
+    result = warm(client, body)
+    assert result["scorecard"] is None
+    assert "schedule_infeasible" in [w["code"] for w in result["warnings"]]
+
+    response = client.post(
+        f"/api/scenario/{result['id']}/dispatch",
+        json=an_event(day_index()[70].isoformat()),
+    )
+    payload = assert_error_shape(response, status=500)
+    assert payload["error"] == "scenario_failed"
