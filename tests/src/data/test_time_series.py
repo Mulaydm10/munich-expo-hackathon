@@ -495,3 +495,156 @@ def test_carbon_intensity_changes_when_biomass_and_hydro_are_included(tmp_path: 
     # known_only.
     assert actual != pytest.approx(six_fuel_only)
     assert actual == pytest.approx(known_only)
+
+
+# =====================================================================
+# Issue #59: a partially-qualified real SMARD header
+# =====================================================================
+
+BASELINE_FILE = "generation_mix_synthetic_2026-06-15_baseline.csv"
+MIXED_HEADER_FILE = "generation_mix_synthetic_2026-06-15_mixed_header.csv"
+QUALIFIED_UNKNOWN_FILE = "generation_mix_synthetic_2026-06-15_qualified_unknown.csv"
+
+# The measured pre-fix numbers, from running the parser at 1e23eb9 on the
+# baseline fixture and on the same bytes with `Braunkohle [MWh]` renamed
+# `Braunkohle [MWh] Berechnete Auflösungen`. Pinned as named constants so a
+# regression reads as "it went back to the broken value", not merely "it
+# changed".
+INTENSITY_CORRECT_FIRST_ROW = 320.81
+# Design's reported case: ONLY `Braunkohle [MWh]` qualified. Dropping a
+# 1080 g/kWh fuel biases the metric DOWN.
+INTENSITY_BRAUNKOHLE_ONLY_DROPPED = 182.77
+# This fixture's own broken value, measured under the same bug. It qualifies
+# three columns -- Braunkohle (1080) but also Wind Onshore (11) and
+# Photovoltaik (45) -- so losing two near-zero-carbon fuels outweighs losing
+# the lignite and the metric biases UP instead. Same defect, opposite sign,
+# which is precisely why "the number moved" is not a safe test and the
+# assertion below is equality against the clean run.
+INTENSITY_MIXED_HEADER_UNFIXED = 400.67
+
+
+def test_carbon_mixed_resolution_qualifier_header_does_not_drop_a_fuel(tmp_path: Path) -> None:
+    """A real export qualifies only SOME unit columns with the resolution they
+    were computed at. Before #59 such a column matched neither the known nor
+    the excluded bucket, so the fuel ceased to exist for the parser: dropping
+    Braunkohle (1080 g/kWh) took intensity_g_kwh down 43% with no raise and no
+    warning.
+
+    The assertion is on the physical number, not on the code path: identical
+    generation must yield identical intensity whatever the header shape."""
+    clean = _carbon(tmp_path, "clean", files=(BASELINE_FILE,))
+    mixed = _carbon(tmp_path, "mixed", files=(MIXED_HEADER_FILE,))
+
+    pd.testing.assert_series_equal(clean["intensity_g_kwh"], mixed["intensity_g_kwh"])
+    assert clean["intensity_g_kwh"].iloc[0] == pytest.approx(INTENSITY_CORRECT_FIRST_ROW, abs=0.01)
+    # the specific broken value this fixture produced before the fix, named
+    assert mixed["intensity_g_kwh"].iloc[0] != pytest.approx(
+        INTENSITY_MIXED_HEADER_UNFIXED, abs=0.01
+    )
+
+
+def test_carbon_qualified_braunkohle_alone_reproduces_designs_reported_case(
+    tmp_path: Path,
+) -> None:
+    """The exact scenario reported on #59, pinned on its own: take the baseline
+    bytes and qualify ONLY `Braunkohle [MWh]`. Before the fix this read 182.77
+    against a correct 320.81 -- a 43% understatement of a figure the pitch
+    leads with, with a byte-identical excluded list."""
+    root = _root(tmp_path, "braunkohle_only")
+    _seed(root, "generation_mix", BASELINE_FILE)
+    path = root / "raw" / "generation_mix" / BASELINE_FILE
+    path.write_bytes(
+        path.read_bytes().replace(
+            "Braunkohle [MWh]".encode(),
+            "Braunkohle [MWh] Berechnete Auflösungen".encode(),
+            1,
+        )
+    )
+    api.canonicalise("generation_mix", root=root)
+    df = api.load("carbon", root=root)
+
+    assert df["intensity_g_kwh"].iloc[0] == pytest.approx(INTENSITY_CORRECT_FIRST_ROW, abs=0.01)
+    assert df["intensity_g_kwh"].iloc[0] != pytest.approx(
+        INTENSITY_BRAUNKOHLE_ONLY_DROPPED, abs=0.01
+    )
+    assert api.meta("carbon", root=root)["fuels_with_resolution_qualifier"] == ["Braunkohle"]
+
+
+def test_carbon_resolution_qualifier_stripping_is_recorded_in_meta(tmp_path: Path) -> None:
+    """CONVENTIONS.md: a coercion is observable. Stripping a qualifier off a
+    header is a coercion, so it is a count and a name list in carbon.meta.json
+    -- something that survives the process -- not a log line."""
+    root = _root(tmp_path, "mixed")
+    _seed(root, "generation_mix", MIXED_HEADER_FILE)
+    api.canonicalise("generation_mix", root=root)
+    m = api.meta("carbon", root=root)
+
+    assert m["n_generation_columns_with_resolution_qualifier"] == 3
+    assert m["fuels_with_resolution_qualifier"] == ["Braunkohle", "Photovoltaik", "Wind Onshore"]
+    assert m["resolution_qualifiers_seen"] == ["Berechnete Auflösungen", "Originalauflösungen"]
+
+    # ...and it is not pinned at a constant: a clean header records zero.
+    clean_root = _root(tmp_path, "clean")
+    _seed(clean_root, "generation_mix", BASELINE_FILE)
+    api.canonicalise("generation_mix", root=clean_root)
+    clean_meta = api.meta("carbon", root=clean_root)
+    assert clean_meta["n_generation_columns_with_resolution_qualifier"] == 0
+    assert clean_meta["fuels_with_resolution_qualifier"] == []
+
+
+def test_carbon_excluded_share_moves_when_a_qualified_column_has_no_known_factor(
+    tmp_path: Path,
+) -> None:
+    """The #59 bug was not only a wrong number, it was an audit metric that
+    read as proof while proving nothing: `excluded_generation_mwh_share_mean`
+    was byte-identical between a run that dropped Braunkohle and one that did
+    not.
+
+    So the metric must demonstrably be able to see a difference. A qualified
+    column whose fuel has NO known factor must land in `excluded` and move the
+    share -- if this assertion can fail, the metric is live."""
+    clean_root = _root(tmp_path, "clean")
+    _seed(clean_root, "generation_mix", BASELINE_FILE)
+    api.canonicalise("generation_mix", root=clean_root)
+    clean_meta = api.meta("carbon", root=clean_root)
+
+    q_root = _root(tmp_path, "qualified_unknown")
+    _seed(q_root, "generation_mix", QUALIFIED_UNKNOWN_FILE)
+    api.canonicalise("generation_mix", root=q_root)
+    q_meta = api.meta("carbon", root=q_root)
+
+    # the qualified unknown fuel is EXCLUDED, not vanished
+    assert q_meta["excluded_generation_categories"] == ["Pumpspeicher", "Sonstige Konventionelle"]
+    assert q_meta["fuels_with_resolution_qualifier"] == ["Sonstige Konventionelle"]
+    # and the share actually moves
+    assert q_meta["excluded_generation_mwh_share_mean"] > clean_meta[
+        "excluded_generation_mwh_share_mean"
+    ]
+
+
+def test_carbon_same_fuel_at_two_resolutions_is_refused_not_double_counted(
+    tmp_path: Path,
+) -> None:
+    """A real download centre can offer one fuel at BOTH `Originalauflösungen`
+    and `Berechnete Auflösungen`. Now that the qualifier is stripped, both
+    stems read `Braunkohle` and summing them would double-count that fuel --
+    the same class of silent wrongness #59 is about, in the other direction.
+    Refuse by name instead."""
+    root = _root(tmp_path, "collide")
+    _seed(root, "generation_mix", BASELINE_FILE)
+    path = root / "raw" / "generation_mix" / BASELINE_FILE
+    lines = path.read_bytes().split(b"\n")
+    out = []
+    seen_header = False
+    for line in lines:
+        if line.startswith(b"#") or not line.strip():
+            out.append(line)
+        elif not seen_header:
+            out.append(line + ";Braunkohle [MWh] Originalauflösungen".encode())
+            seen_header = True
+        else:
+            out.append(line + b";20,00")
+    path.write_bytes(b"\n".join(out))
+
+    with pytest.raises(ValueError, match="same fuel at more than one resolution"):
+        api.canonicalise("generation_mix", root=root)

@@ -30,6 +30,7 @@ import io
 import json
 import math
 import os
+import re
 import warnings
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
@@ -625,6 +626,24 @@ _EXPECTED_UNKNOWN_FACTOR_CATEGORIES: tuple[str, ...] = (
 
 _MWH_SUFFIX = " [MWh]"
 
+# Issue #59: a REAL SMARD download-centre export may qualify a unit column
+# with the resolution it was computed at -- `Braunkohle [MWh] Berechnete
+# Auflösungen` (`Originalauflösungen` also occurs). The previous exact
+# `" [MWh]"` suffix match classified such a column as NEITHER known nor
+# excluded, so the fuel silently vanished from the mix: no raise, no
+# warning, and -- worst -- no change to
+# `excluded_generation_mwh_share_mean`, so the audit trail affirmed that
+# nothing was dropped in exactly the run where something was. Measured on
+# the baseline fixture with Braunkohle (1080 g/kWh) qualified:
+# intensity_g_kwh 320.81 -> 182.77, a 43% understatement, silently.
+#
+# Every `<fuel> [MWh]` column is therefore matched with an OPTIONAL trailing
+# resolution qualifier. The qualifier is stripped, the fuel classified
+# normally, and the stripping recorded in carbon.meta.json (a count and the
+# distinct qualifiers seen) -- observable as a number, not a log line, per
+# CONVENTIONS.md.
+_MWH_COLUMN_RE = re.compile(r"^\s*(?P<fuel>.+?)\s*\[MWh\]\s*(?P<qualifier>\S.*?)?\s*$")
+
 
 def _parse_generation_mix_raw(raw: bytes) -> tuple[pd.DataFrame, list[str]]:
     """One generation_mix raw file (generation by fuel type, MWh) -> (rows,
@@ -657,9 +676,31 @@ def _parse_generation_mix_raw(raw: bytes) -> tuple[pd.DataFrame, list[str]]:
     df = _read_de_series_csv(raw)
     t_start = _parse_smard_datetime_local(df["Datum von"])
 
-    generation_cols = [c for c in df.columns if c.endswith(_MWH_SUFFIX)]
-    known_cols = [c for c in generation_cols if c[: -len(_MWH_SUFFIX)] in CARBON_INTENSITY_FACTORS_G_KWH]
-    excluded_cols = [c for c in generation_cols if c not in known_cols]
+    # column -> (fuel, resolution qualifier or None). Every MWh column lands
+    # here, qualified or not, so none can fall between the buckets (#59).
+    column_fuel: dict[str, tuple[str, str | None]] = {}
+    for column in df.columns:
+        match = _MWH_COLUMN_RE.match(column)
+        if match is not None:
+            column_fuel[column] = (match.group("fuel"), match.group("qualifier"))
+
+    # A real export can offer the SAME fuel at two resolutions (e.g. both
+    # `Originalauflösungen` and `Berechnete Auflösungen`). Summing both would
+    # double-count that fuel's generation, so refuse by name rather than
+    # silently pick one -- the failure mode this whole issue is about.
+    columns_by_fuel: dict[str, list[str]] = {}
+    for column, (fuel, _) in column_fuel.items():
+        columns_by_fuel.setdefault(fuel, []).append(column)
+    collisions = {f: cols for f, cols in columns_by_fuel.items() if len(cols) > 1}
+    if collisions:
+        raise ValueError(
+            "generation_mix raw file carries the same fuel at more than one "
+            f"resolution: {collisions}. Summing them would double-count that "
+            "fuel; re-export with a single resolution per fuel."
+        )
+
+    known_cols = [c for c, (fuel, _) in column_fuel.items() if fuel in CARBON_INTENSITY_FACTORS_G_KWH]
+    excluded_cols = [c for c in column_fuel if c not in known_cols]
 
     if not known_cols:
         raise ValueError(
@@ -667,23 +708,25 @@ def _parse_generation_mix_raw(raw: bytes) -> tuple[pd.DataFrame, list[str]]:
             f"columns {list(CARBON_INTENSITY_FACTORS_G_KWH)}; got columns {list(df.columns)}"
         )
 
-    known_fuels = [c[: -len(_MWH_SUFFIX)] for c in known_cols]
+    known_fuels = [column_fuel[c][0] for c in known_cols]
     gen_known = pd.DataFrame(
-        {fuel: _decimal_comma_to_float(df[f"{fuel}{_MWH_SUFFIX}"]) for fuel in known_fuels}
+        {column_fuel[col][0]: _decimal_comma_to_float(df[col]) for col in known_cols}
     )
     factors = pd.Series(CARBON_INTENSITY_FACTORS_G_KWH)[known_fuels]
     total_known = gen_known.sum(axis=1)
     weighted = (gen_known * factors).sum(axis=1)
     intensity = weighted / total_known
 
-    excluded_fuels = [c[: -len(_MWH_SUFFIX)] for c in excluded_cols]
+    excluded_fuels = [column_fuel[c][0] for c in excluded_cols]
     if excluded_cols:
         gen_excluded = pd.DataFrame(
-            {fuel: _decimal_comma_to_float(df[col]) for fuel, col in zip(excluded_fuels, excluded_cols)}
+            {column_fuel[col][0]: _decimal_comma_to_float(df[col]) for col in excluded_cols}
         )
         total_excluded = gen_excluded.sum(axis=1)
     else:
         total_excluded = pd.Series(0.0, index=df.index)
+
+    qualified_fuels = {fuel: q for (fuel, q) in column_fuel.values() if q}
 
     if (total_excluded > 0).any():
         warnings.warn(
@@ -702,7 +745,7 @@ def _parse_generation_mix_raw(raw: bytes) -> tuple[pd.DataFrame, list[str]]:
             "_excluded_gen_mwh": total_excluded,
         }
     )
-    return rows, excluded_fuels
+    return rows, excluded_fuels, qualified_fuels
 
 
 # --- DWD raw parsing (weather) ----------------------------------------------
@@ -812,11 +855,18 @@ def _canonicalise_epex_day_ahead(*, root: Path) -> Path:
 def _canonicalise_generation_mix(*, root: Path) -> Path:
     raw_files = _raw_files(root, "generation_mix")
     parsed = [_parse_generation_mix_raw(p.read_bytes()) for p in raw_files]
-    rows = pd.concat([r for r, _ in parsed], ignore_index=True)
+    rows = pd.concat([r for r, _, _ in parsed], ignore_index=True)
     # Union across every raw file, not just the static "expected" list: a
     # file can carry an excluded category we didn't anticipate (see
     # _parse_generation_mix_raw's docstring), and this must say so.
-    excluded_categories_seen = sorted({fuel for _, fuels in parsed for fuel in fuels})
+    excluded_categories_seen = sorted({fuel for _, fuels, _ in parsed for fuel in fuels})
+    # Issue #59: stripping a resolution qualifier off a column header is a
+    # coercion, so it is recorded as a number and a name list rather than a
+    # log line -- otherwise the only evidence it happened dies with the
+    # process. Union across files, same reasoning as above.
+    qualified_fuels_seen: dict[str, str] = {}
+    for _, _, quals in parsed:
+        qualified_fuels_seen.update(quals)
     helper_cols = ["intensity_g_kwh", "_known_gen_mwh", "_excluded_gen_mwh"]
     hourly, n_dropped = _finalize_local_series(rows, value_cols=helper_cols)
     quarter, method = _resample_15min(hourly, helper_cols, native_resolution_min=60)
@@ -846,6 +896,9 @@ def _canonicalise_generation_mix(*, root: Path) -> Path:
             "n_nonexistent_local_times_dropped": n_dropped,
             "emission_factors_g_kwh": CARBON_INTENSITY_FACTORS_G_KWH,
             "excluded_generation_categories": excluded_categories_seen,
+            "fuels_with_resolution_qualifier": sorted(qualified_fuels_seen),
+            "n_generation_columns_with_resolution_qualifier": len(qualified_fuels_seen),
+            "resolution_qualifiers_seen": sorted(set(qualified_fuels_seen.values())),
             "excluded_generation_mwh_share_mean": excluded_share_mean,
             "n_rows_with_excluded_generation_category": n_rows_with_excluded_generation,
         },

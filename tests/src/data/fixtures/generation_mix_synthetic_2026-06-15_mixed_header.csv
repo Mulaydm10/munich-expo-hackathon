@@ -1,0 +1,15 @@
+# SYNTHETIC FIXTURE - authored for FlexGrid issue #59, not a real SMARD download.
+# Identical generation numbers to the _baseline fixture, so intensity_g_kwh must
+# come out IDENTICAL; the only difference is the header shape.
+# A real SMARD download-centre export qualifies a unit column with the resolution
+# it was computed at. Real exports are MIXED: only some columns carry it. A
+# fully-qualified header already raised before #59, so it is the easy case and
+# proves nothing -- this fixture is the shape that actually slipped through.
+# Braunkohle (the 1080 g/kWh fuel whose loss cost 43%) and Wind Onshore carry
+# 'Berechnete Aufloesungen'; Photovoltaik carries 'Originalaufloesungen'; the rest
+# are plain.
+Datum von;Datum bis;Braunkohle [MWh] Berechnete Auflösungen;Steinkohle [MWh];Erdgas [MWh];Kernenergie [MWh];Wind Onshore [MWh] Berechnete Auflösungen;Wind Offshore [MWh];Photovoltaik [MWh] Originalauflösungen;Biomasse [MWh];Wasserkraft [MWh];Pumpspeicher [MWh]
+15.06.2026 12:00;15.06.2026 13:00;20,00;10,00;15,00;0,00;25,00;5,00;40,00;10,00;5,00;2,00
+15.06.2026 13:00;15.06.2026 14:00;18,00;9,00;14,00;0,00;27,00;5,00;42,00;10,00;5,00;1,00
+15.06.2026 14:00;15.06.2026 15:00;16,00;8,00;13,00;0,00;29,00;5,00;38,00;9,00;5,00;1,00
+15.06.2026 15:00;15.06.2026 16:00;15,00;7,00;12,00;0,00;31,00;5,00;35,00;9,00;4,00;0,00
