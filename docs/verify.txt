@@ -1,4 +1,12 @@
 # <lane>: <command>   one per lane, design-owned. Plain words only (no metacharacters, globs, quotes); run from repo root after docs/setup.sh as on main.
+#
+# tests/integration/ (the cross-lane tier, contracts/CONVENTIONS.md "Cross-lane integration
+# tier") is deliberately NOT a row here: `.github/workflows/checks.yml`'s `lane` job parses
+# every line below as `<name>: <command>` and treats `<name>` as a lane for its "no lane is a
+# prefix of another" and "design/* stays out of lane directories" checks -- an `integration:`
+# row here would make tests/integration/ read as lane-owned territory that a design/* PR (which
+# is the only kind of PR allowed to touch this tier) could then never edit. It runs on every PR
+# via its own `integration` job in checks.yml instead: `python3 -m pytest tests/integration -q`.
 canary: python3 -m pytest tests/canary -q
 src/data: python3 -m pytest tests/src/data -q
 src/fleet: python3 -m pytest tests/src/fleet -q
