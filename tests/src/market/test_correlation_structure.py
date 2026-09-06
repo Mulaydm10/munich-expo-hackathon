@@ -18,11 +18,14 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import pytest
+from scipy.stats import norm
 
 from src.market import api
 
 from .conftest import (
     PERIODS_PER_DAY,
+    QUANTILE_TAUS,
+    daily_shape,
     load_frame,
     quantile_frame,
     site_table,
@@ -394,3 +397,195 @@ def test_pool_consumes_the_pairwise_frame_including_its_joint_ranks():
     missing_pair.attrs = dict(structure.attrs)
     with pytest.raises(api.MarketError, match="no entry for pair"):
         api.pool(firm, method="gaussian_copula", seed=0, correlation=missing_pair)
+
+
+# ---------------------------------------------------------------------------
+# pseudo_observations must stay keyed to the RIGHT site, not a rotated one
+#
+# `pool(method='empirical')` looks a site's joint-rank sequence up by its
+# site_id in `.attrs['pseudo_observations']`. A bug that files one site's
+# ranks under a neighbouring site's key would be invisible to every
+# aggregate-statistic check above (mean_pairwise_correlation, correlation
+# values, decay length): those are unaffected because the *values* travelling
+# in the `correlation` column are untouched, only the joint-rank *identity* is
+# scrambled. It corrupts exactly the empirical-copula pooled figure -- the
+# central claim -- and only shows up on a portfolio whose sites are not
+# interchangeable (see the fixture note below for why an exchangeable
+# fixture cannot catch this).
+# ---------------------------------------------------------------------------
+
+def test_pseudo_observations_are_keyed_to_the_right_site_not_rotated():
+    """Direct identity pin, computed independently of the function under test.
+
+    `attrs['pseudo_observations'][site]` must be THAT site's own residual rank
+    sequence. Recomputed here from raw load by the same standard convention
+    (residual = load minus its own time-of-day mean; pseudo-observation =
+    average rank / (m + 1)) -- never read back from anything else the
+    function returned. A rotation bug (each site's ranks filed one key over)
+    would leave every other check in this file green (the `correlation`
+    column and its mean are unaffected) while corrupting this exact payload.
+    """
+    n_days = 5
+    t = utc_index(n_days, start="2026-03-02T00:00:00Z")
+    rng = np.random.default_rng(91)
+    profile = _shared_daily_profile(n_days, amplitude=100.0)
+    # Heterogeneous scale and independent idiosyncratic draws per site, so a
+    # rotated sequence is a materially different sequence, not a coincidence.
+    loads = {
+        "berlin": profile + rng.normal(0.0, 10.0, len(t)),
+        "potsdam": profile + rng.normal(0.0, 60.0, len(t)),
+        "frankfurt": profile * 0.5 + rng.normal(0.0, 25.0, len(t)),
+        "muenchen": profile * 1.5 + rng.normal(0.0, 40.0, len(t)),
+    }
+    out = api.correlation_structure(load_frame(loads, t), SITES)
+
+    bucket = (t.hour * 60 + t.minute).to_numpy()
+    m = len(t)
+    for site_id, series in loads.items():
+        s = pd.Series(np.asarray(series, dtype=float))
+        resid = (s - s.groupby(bucket).transform("mean")).to_numpy()
+        expected_rank = pd.Series(resid).rank(method="average").to_numpy() / (m + 1.0)
+        got = np.asarray(out.attrs["pseudo_observations"][site_id], dtype=float)
+        assert np.allclose(got, expected_rank, atol=1e-9), (
+            f"pseudo_observations[{site_id!r}] does not match that site's own residual "
+            "rank sequence -- the joint ranks are keyed to the wrong site"
+        )
+
+    # guard the guard: sites are not accidentally identical, so matching the
+    # WRONG site's sequence would not slip through as a coincidence
+    seqs = [np.asarray(out.attrs["pseudo_observations"][s]) for s in loads]
+    for i in range(len(seqs)):
+        for j in range(i + 1, len(seqs)):
+            assert not np.allclose(seqs[i], seqs[j]), (
+                "two sites produced identical rank sequences -- this fixture cannot "
+                "distinguish a correctly-keyed payload from a mislabelled one"
+            )
+
+
+def _quantile_frame_heterogeneous_sigma(mu_by_site: dict, sigma_by_site: dict,
+                                        t: pd.DatetimeIndex) -> pd.DataFrame:
+    """Like `conftest.quantile_frame`, but each site gets its OWN quantile
+    spread. `pool`'s central claim (pooled >= sum) does not need this, but
+    catching a rotated joint-rank identity does: with a single shared sigma,
+    a normal marginal's upper and lower tails cancel symmetrically under any
+    relabelling of an anti-correlated pair, so a rotation bug is invisible.
+    Distinct per-site sigma breaks that symmetry."""
+    frames = []
+    for site_id, mu in mu_by_site.items():
+        cols: dict[str, object] = {"t": t, "site_id": [site_id] * len(t)}
+        for tau in QUANTILE_TAUS:
+            cols[api._quantile_col(tau)] = (
+                np.asarray(mu, dtype=float) + norm.ppf(tau) * sigma_by_site[site_id]
+            )
+        frames.append(pd.DataFrame(cols))
+    return pd.concat(frames, ignore_index=True)
+
+
+def test_pool_empirical_uses_each_sites_own_joint_ranks_not_a_rotated_neighbours():
+    """Behavioural pin: the mislabelling above corrupts the actual pooled
+    figure `pool(method='empirical')` sells, on a portfolio designed so a
+    relabelling cannot hide.
+
+    Two things make a fixture sensitive to *which* site's ranks back which
+    site's marginal, where an exchangeable fixture (equal pairwise
+    correlation, equal quantile spread) provably is not:
+      * non-uniform pairwise correlation (sites 'a' and 'b' share a strong
+        common factor; 'c' is nearly independent of both), so a rotation
+        swaps a site's TRUE dependence partner for the wrong one; and
+      * distinct per-site quantile spread (sigma), so a Gaussian marginal's
+        symmetric tails do not cancel a swap for free (see the helper above).
+
+    The reference value is computed independently in this test: an in-sample
+    bootstrap that inverts each site's OWN `firm_capacity` quantile curve
+    (linear interpolation in Phi^-1(tau) space -- the documented method) at
+    that site's OWN historical residual rank, sums across sites, and takes
+    the 5th percentile across the historical sample. This uses only the raw
+    quantile frame and raw load -- never `pool`'s output or `.attrs`.
+    """
+    n_days = 8
+    t = utc_index(n_days, start="2026-04-13T00:00:00Z")
+    rng = np.random.default_rng(202)
+    shape = daily_shape(n_days, amplitude=30.0)
+    common = rng.normal(0.0, 1.0, len(t))
+    idio_a = rng.normal(0.0, 1.0, len(t))
+    idio_b = rng.normal(0.0, 1.0, len(t))
+    idio_c = rng.normal(0.0, 1.0, len(t))
+
+    # a & b share a strong common factor (measured correlation ~0.9); c is
+    # close to independent of both (~0.2) -- deliberately NOT exchangeable.
+    mu = {
+        "a": 600.0 + shape + 60.0 * (np.sqrt(0.9) * common + np.sqrt(0.1) * idio_a),
+        "b": 900.0 + shape + 60.0 * (np.sqrt(0.9) * common + np.sqrt(0.1) * idio_b),
+        "c": 400.0 + shape + 20.0 * (np.sqrt(0.05) * common + np.sqrt(0.95) * idio_c),
+    }
+    sigma_by_site = {"a": 30.0, "b": 70.0, "c": 15.0}
+    site_ids = sorted(mu)
+    sites_tbl = site_table(site_ids, [52.5, 50.1, 48.1], [13.4, 8.6, 11.6])
+
+    quantiles = _quantile_frame_heterogeneous_sigma(mu, sigma_by_site, t)
+    firm = api.firm_capacity(quantiles, tau=0.05)
+    structure = api.correlation_structure(load_frame(mu, t), sites_tbl)
+
+    # guard the guard: the fixture really is non-exchangeable
+    corr_by_pair = {(row.site_a, row.site_b): row.correlation for row in structure.itertuples(index=False)}
+    assert corr_by_pair[("a", "b")] > 0.7
+    assert corr_by_pair[("a", "c")] < 0.5
+    assert corr_by_pair[("b", "c")] < 0.5
+
+    # --- independent reference, computed from raw inputs only ---
+    m = len(t)
+    bucket = (t.hour * 60 + t.minute).to_numpy()
+    rank_frac = {}
+    for s in site_ids:
+        series = pd.Series(np.asarray(mu[s], dtype=float))
+        resid = (series - series.groupby(bucket).transform("mean")).to_numpy()
+        rank_frac[s] = pd.Series(resid).rank(method="average").to_numpy() / (m + 1.0)
+
+    taus = np.array(QUANTILE_TAUS)
+    z_knots = norm.ppf(taus)
+    curve_col_names = [f"firm_q{int(round(tv * 100)):02d}_kw" for tv in taus]
+    curves = {
+        s: firm[firm["site_id"] == s].sort_values("t")[curve_col_names].to_numpy()
+        for s in site_ids
+    }
+
+    def invert(curve: np.ndarray, u: np.ndarray) -> np.ndarray:
+        """curve: (n_t, k) marginal quantile curve; u: (m,) probabilities ->
+        (n_t, m) inverted values, linear in Phi^-1(tau) space, clipped at 0."""
+        z = norm.ppf(u)
+        idx = np.clip(np.searchsorted(z_knots, z) - 1, 0, len(z_knots) - 2)
+        w = (z - z_knots[idx]) / (z_knots[idx + 1] - z_knots[idx])
+        lo, hi = curve[:, idx], curve[:, idx + 1]
+        return np.clip(lo + (hi - lo) * w[None, :], 0.0, None)
+
+    def bootstrap_pool_q05(rank_frac_by_site: dict) -> np.ndarray:
+        n_t = curves[site_ids[0]].shape[0]
+        totals = np.zeros((n_t, m))
+        for s in site_ids:
+            totals += invert(curves[s], rank_frac_by_site[s])
+        return np.quantile(totals, 0.05, axis=1)
+
+    expected_correct = bootstrap_pool_q05(rank_frac)
+
+    got = api.pool(firm, method="empirical", seed=0, correlation=structure)["pool_firm_kw"].to_numpy()
+    rel = np.abs(got - expected_correct) / np.maximum(expected_correct, 1.0)
+    assert rel.mean() < 0.01, (
+        f"pool(method='empirical') using correlation_structure()'s own pseudo_observations "
+        f"departs from the independently-computed empirical-copula pool by {rel.mean():.2%} "
+        "on average -- the joint ranks it consumed were not each site's own"
+    )
+
+    # guard the guard: prove THIS fixture is actually sensitive to identity --
+    # deliberately rotating the joint-rank labels (by one, same shape as a
+    # correlation_structure() bug that files a site's ranks under its
+    # neighbour's key) must move the pooled figure measurably away from the
+    # independently-computed reference above. If it didn't, the assertion
+    # above would pass on a mislabelled implementation too.
+    rotated_ids = site_ids[1:] + site_ids[:1]
+    rotated_rank_frac = {s: rank_frac[other] for s, other in zip(site_ids, rotated_ids)}
+    expected_rotated = bootstrap_pool_q05(rotated_rank_frac)
+    gap = abs(expected_rotated.mean() - expected_correct.mean()) / expected_correct.mean()
+    assert gap > 0.005, (
+        f"rotating the joint-rank identity only moved the independent reference by "
+        f"{gap:.2%} -- this fixture cannot tell a correctly-keyed payload from a rotated one"
+    )
