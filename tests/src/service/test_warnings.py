@@ -323,13 +323,34 @@ def test_the_caveats_that_always_apply_say_which_figure_is_null(client):
     assert detail(result, "commitments_not_applied")["commitments"] == 0
 
 
+def _null_reason_present(warnings, function_name, failed_code):
+    """True if `warnings` explains why `function_name`'s figure is null, whichever of
+    its two failure modes is currently live: not implemented at all (`upstream_unavailable`,
+    `detail.function == function_name`), or implemented but refusing on this repo's data
+    (its own dedicated `*_failed` code, `failed_code`)."""
+    return any(
+        (w["code"] == "upstream_unavailable" and w["detail"].get("function") == function_name)
+        or w["code"] == failed_code
+        for w in warnings
+    )
+
+
 def test_an_unavailable_upstream_function_nulls_its_figure_rather_than_zeroing_it(client):
-    """`src/market.pool()` is not implemented yet (issue #33 is open), so the pooled
-    promise is `null` with the reason on the wire -- never `0.0`, which would read as a
-    real measurement of no capacity."""
+    """`src/market.pool()` / `diversification_curve()` are either not implemented yet
+    (issue #33 open) or implemented but refusing on this repo's data -- `pool()` on a
+    site with zero residual variation, `diversification_curve()` because there is no
+    measured `realised` load anywhere in this repo (`data/raw/` is empty) and it has no
+    default for that argument. Either way, the pooled promise and the curve must come
+    back `null` with the reason on the wire -- never `0.0`, which would read as a real
+    measurement of no capacity. This is checked against whichever failure mode is
+    actually live in `src/market` right now, rather than assuming non-implementation, so
+    it keeps holding once #33 lands (`test_market_seam.py` pins the post-#33 behaviour
+    directly)."""
     result = warm(client, FEASIBLE)
-    unavailable = [w for w in result["warnings"] if w["code"] == "upstream_unavailable"]
-    assert {w["detail"]["function"] for w in unavailable} >= {"pool", "diversification_curve"}
+    assert _null_reason_present(result["warnings"], "pool", "pool_failed")
+    assert _null_reason_present(
+        result["warnings"], "diversification_curve", "diversification_curve_failed"
+    )
     assert result["totals"]["pool_firm_mw"] is None
     assert result["totals"]["peakers_displaced"] is None
     assert client.get(f"/api/scenario/{result['id']}/pooling").json()[
