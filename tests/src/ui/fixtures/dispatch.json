@@ -1,0 +1,16 @@
+{
+  "event": {
+    "start_t": "2026-10-25T16:00:00+00:00",
+    "end_t": "2026-10-25T20:00:00+00:00",
+    "required_kw": 1000.0
+  },
+  "promised_kw": 1000.0,
+  "delivered_kw": 941.25,
+  "shortfall_kwh": 58.75,
+  "penalty_eur": 7.05,
+  "reduction_kw_achieved": 118.4,
+  "sessions_total": 214,
+  "sessions_on_time": 214,
+  "deadline_misses": 0,
+  "unmet_kwh": 0.0
+}

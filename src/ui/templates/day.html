@@ -1,0 +1,93 @@
+{% extends "_base.html" %}
+{% import "_macros.html" as m %}
+
+{# Screen 2 of DEMO.md: one day of /api/scenario/{id}/timeseries -- baseline vs
+   optimised load, the thermal envelope as a band, price underneath, the sold reduction
+   floor shaded. Press play -> SSE playback of /api/scenario/{id}/stream. #}
+
+{% block content %}
+{% call m.screen_body(error) %}
+
+{% if intervals %}
+<section class="screen-lede">
+  <p data-testid="interval-count">
+    <strong>{{ intervals | length }}</strong> intervals,
+    {{ intervals[0].t | berlin }} → {{ intervals[-1].t | berlin }}
+    (Europe/Berlin).
+  </p>
+  <p class="note">
+    A 15-minute day is 96 intervals; the DST days are 92 and 100
+    (<code>2026-10-25</code> is the long one). The count above is what the API sent —
+    this page does not fill gaps.
+  </p>
+</section>
+
+<div class="day-controls">
+  <button type="button" id="play" data-testid="play-button" aria-keyshortcuts="Space">
+    ▶ Play the day <span class="kbd-inline"><kbd>space</kbd></span>
+  </button>
+  <output id="play-clock" class="play-clock" data-testid="play-clock">
+    {{ intervals[0].t | berlin_clock }}
+  </output>
+  {% if stream_url %}
+  <span class="stream-url" data-testid="stream-url" data-stream="{{ stream_url }}">
+    playback source: <code>{{ stream_url }}</code>
+  </span>
+  {% else %}
+  <span class="stream-url" data-testid="stream-url-missing">
+    Live playback unavailable: no stream URL provided by API. Scrubbing the recorded
+    response instead.
+  </span>
+  {% endif %}
+</div>
+
+<figure class="day-figure">
+  <canvas id="day-canvas" class="day-canvas" width="1400" height="700"
+          data-testid="day-canvas" role="img"
+          aria-label="Baseline and optimised site load in kW over one day, with the thermal envelope band, the sold reduction floor, and the price curve"></canvas>
+  <figcaption>
+    Y axis: power in <strong>kW</strong> (left) and price in
+    <strong>EUR/MWh</strong> (right). X axis: time of day, <strong>Europe/Berlin</strong>.
+    Baseline is drawn dashed and optimised solid, so the two are distinguishable
+    without colour.
+  </figcaption>
+</figure>
+
+<table class="series-key" data-testid="series-key">
+  <caption>What is drawn, and the field it comes from</caption>
+  <thead><tr><th scope="col">Series</th><th scope="col">Field</th><th scope="col">Unit</th></tr></thead>
+  <tbody>
+    {% for label, key in [
+        ("Baseline load (dashed)", "baseline_load_kw"),
+        ("Optimised load (solid)", "optimised_load_kw"),
+        ("Thermal envelope (band)", "envelope_kw"),
+        ("Sold reduction floor (shaded)", "firm_kw"),
+        ("Price (right axis)", "price_eur_mwh")] %}
+    <tr data-testid="series-{{ key }}">
+      <th scope="row">{{ label }}</th>
+      <td><code>{{ key }}</code></td>
+      <td>
+        {% if has_value(intervals[0], key) %}
+        <span class="unit">{{ key | unit_for_key }}</span>
+        {% else %}
+        <span class="value-missing" data-testid="missing-series-{{ key }}">{{ MISSING_LABEL }} — series not drawn</span>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+{{ m.payload_json("intervals", intervals) }}
+{% else %}
+{{ m.empty_note("interval") }}
+{% endif %}
+
+{% endcall %}
+{% endblock %}
+
+{% block scripts %}
+{% if intervals and not error %}
+<script type="module" src="{{ STATIC }}/screen-day.js"></script>
+{% endif %}
+{% endblock %}

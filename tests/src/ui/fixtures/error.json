@@ -1,0 +1,5 @@
+{
+  "error": "scenario_not_found",
+  "detail": "no cached ScenarioResult for id 9f31c0aa; the run may have been evicted",
+  "how_to_fix": "POST /api/scenario with the same spec to rebuild it, then reload this page"
+}

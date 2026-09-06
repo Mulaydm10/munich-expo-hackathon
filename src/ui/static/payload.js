@@ -1,0 +1,68 @@
+// Read one <script type="application/json"> payload block written by _macros.html's
+// payload_json(). The block holds an API response verbatim.
+//
+// Rule for every module in this directory (contracts/src/ui.md, "Explicitly not this
+// lane's job: computing anything"): a module may map a value to a pixel, pick a
+// colour, bin points for drawing, and format a value that is already in the payload.
+// It may not sum, average, fit, interpolate or otherwise derive a figure a judge
+// reads as a result. If a number is not in the response, the fix is a src/service
+// issue.
+export function readPayload(name) {
+  const el = document.getElementById(`payload-${name}`);
+  if (!el) return null;
+  try {
+    return JSON.parse(el.textContent);
+  } catch (err) {
+    // Never fall through to an empty array: an unparseable payload must look broken,
+    // not empty. Zero and unknown are not the same thing.
+    console.error(`payload-${name} is not valid JSON`, err);
+    return null;
+  }
+}
+
+// Draw an explicit "this failed" message onto a canvas rather than leaving it blank.
+// A blank chart reads as "the answer is zero".
+export function drawUnavailable(canvas, message) {
+  const ctx = canvas.getContext("2d");
+  ctx.save();
+  ctx.fillStyle = "#ffe3e0";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = "#b3261e";
+  ctx.font = "bold 28px system-ui, sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText(message, canvas.width / 2, canvas.height / 2);
+  ctx.restore();
+}
+
+// Value -> pixel. Rendering, not arithmetic on a displayed figure.
+export function scaler(lo, hi, pxLo, pxHi) {
+  const span = hi - lo;
+  if (!Number.isFinite(span) || span === 0) return () => (pxLo + pxHi) / 2;
+  return (v) => pxLo + ((v - lo) / span) * (pxHi - pxLo);
+}
+
+// Extent of a field across rows, for axis limits only. Rows missing the field are
+// skipped rather than treated as 0 — a gap must not drag an axis down to zero.
+export function extent(rows, key) {
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (const r of rows) {
+    const v = r[key];
+    if (typeof v !== "number" || !Number.isFinite(v)) continue;
+    if (v < lo) lo = v;
+    if (v > hi) hi = v;
+  }
+  return Number.isFinite(lo) ? [lo, hi] : null;
+}
+
+export function berlinClock(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "unknown time";
+  return new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Europe/Berlin",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    timeZoneName: "shortOffset",
+  }).format(d);
+}

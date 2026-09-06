@@ -2,7 +2,7 @@
    error/warning behaviour that contracts/src/ui.md demands is written once and
    applied identically everywhere, not re-derived per screen. #}
 
-{% macro screen_body() %}
+{% macro screen_body(error) %}
 {# The single error/success fork every screen goes through. `error` is a top-level
    context key shaped like contracts/src/service.md's `{error, detail, how_to_fix}` --
    when present, render the failure state and NOTHING else on this screen: an error
@@ -15,6 +15,10 @@
   <p class="banner-error-code" data-testid="error-code">{{ error.error }}</p>
   <p data-testid="error-detail">{{ error.detail }}</p>
   <p data-testid="error-how-to-fix"><strong>How to fix:</strong> {{ error.how_to_fix }}</p>
+  <p class="banner-note">
+    No chart is drawn for this screen. Nothing below is a measurement of zero; the
+    request to the API did not succeed.
+  </p>
 </div>
 {% else %}
 {{ caller() }}
@@ -26,12 +30,16 @@
 {# contracts/CONVENTIONS.md: "any coercion is observable"; contracts/src/ui.md:
    "warnings[] is rendered, not swallowed". Rendered unconditionally whenever the list
    is non-empty -- never behind a click, never summarised away. Each entry may be a
-   plain string (older/simple shape) or a structured object; the exact per-item shape
-   of a src/service warning is not pinned down by contracts/src/service.md beyond
+   plain string (simple shape) or a structured object; the per-item shape of a
+   src/service warning is not pinned down by contracts/src/service.md beyond
    "warnings[]" existing, so both are handled -- see the PR notes on this ambiguity. #}
 {% if warnings %}
-<section class="warnings" data-testid="warnings" aria-label="Data-quality warnings">
-  <h2>Warnings — {{ warnings | length }}</h2>
+<section class="warnings" data-testid="warnings" role="status" aria-label="Pipeline warnings">
+  <h2 data-testid="warnings-count">Pipeline warnings — {{ warnings | length }}</h2>
+  <p class="warnings-lede">
+    The pipeline had to assume or clip something to produce the numbers on this page.
+    Every item below changed an answer.
+  </p>
   <ul>
     {% for w in warnings %}
     {% if w is mapping %}
@@ -39,7 +47,7 @@
       <span class="warning-code">{{ w.code if w.code is defined else "warning" }}</span>
       <span class="warning-message">{{ w.message if w.message is defined else w }}</span>
       {% if w.value is defined and w.value is not none %}
-      <span class="warning-value">{{ "%.4g"|format(w.value) }}{% if w.unit is defined and w.unit %} {{ w.unit }}{% elif w.code is defined %} {{ w.code | unit_for_key }}{% endif %}</span>
+      <span class="warning-value">{{ w.value | num(4) }}{% if w.unit is defined and w.unit %} {{ w.unit }}{% elif w.code is defined %} {{ w.code | unit_for_key }}{% endif %}</span>
       {% endif %}
     </li>
     {% else %}
@@ -51,7 +59,9 @@
   </ul>
 </section>
 {% else %}
-<p class="warnings-empty" data-testid="warnings-empty">No warnings reported for this scenario.</p>
+<p class="warnings-empty" data-testid="warnings-empty">
+  Pipeline warnings: none reported for this scenario.
+</p>
 {% endif %}
 {% endmacro %}
 
@@ -60,26 +70,59 @@
 {# One inline tag, used next to every figure that has a `source` string travelling
    with it. "(assumed)" only appears when the source actually says ASSUMED --
    otherwise the source text itself is shown, so a real citation is never relabelled
-   as a guess and a guess is never shown bare. #}
+   as a guess and a guess is never shown bare. A missing source is its own third
+   state: not "assumed", not "sourced", but "the API did not say". #}
 {% if source %}
-<span class="provenance {{ 'provenance-assumed' if source | is_assumed else 'provenance-sourced' }}" title="{{ source }}">
-  {% if source | is_assumed %}(assumed){% else %}(source: {{ source | truncate(40) }}){% endif %}
+<span class="provenance {{ 'provenance-assumed' if source | is_assumed else 'provenance-sourced' }}"
+      data-testid="{{ 'provenance-assumed' if source | is_assumed else 'provenance-sourced' }}"
+      title="{{ source }}">
+  {% if source | is_assumed %}(assumed — not a measured or sourced figure){% else %}(source: {{ source | truncate(60) }}){% endif %}
 </span>
 {% else %}
-<span class="provenance provenance-missing" data-testid="provenance-missing" title="src/service does not provide a source for this figure">(source not provided by API)</span>
+<span class="provenance provenance-missing" data-testid="provenance-missing"
+      title="src/service did not provide a source for this figure">(source not provided by API)</span>
 {% endif %}
+{% endmacro %}
+
+
+{% macro figure(label, obj, key, digits=1) %}
+{# A labelled figure with its unit, straight off the payload. The zero/unknown fork
+   lives in has_value(): 0.0 renders as "0.0 kW", an absent key renders as
+   "not provided by API". They must never render the same. #}
+<tr class="figure-row" data-testid="figure-{{ key }}">
+  <th scope="row">{{ label }}</th>
+  <td class="figure-value">
+    {% if has_value(obj, key) %}
+    <span data-testid="value-{{ key }}">{{ value_of(obj, key) | num(digits) }}</span>
+    {% set u = key | unit_for_key %}
+    {% if u %}<span class="unit">{{ u }}</span>{% endif %}
+    {% else %}
+    <span class="value-missing" data-testid="missing-{{ key }}">{{ MISSING_LABEL }}</span>
+    {% endif %}
+  </td>
+  <td class="figure-note">
+    {% if key in PER_INTERVAL_FLOOR_KEYS %}
+    <span class="caveat" data-testid="floor-caveat-{{ key }}">{{ PER_INTERVAL_FLOOR_CAVEAT }}</span>
+    {% endif %}
+  </td>
+</tr>
 {% endmacro %}
 
 
 {% macro penalty_multiplier_line(value, source) %}
 {# The one figure the issue calls out by name: never a bare "3.0", always the sentence
-   that says what it means and that it is invented. #}
-{% if value is none %}
-<p class="figure figure-missing" data-testid="penalty-multiplier-missing">Penalty multiplier: not provided by API.</p>
+   that says what it means and that it is an invented scenario parameter.
+   `is undefined` matters as much as `is none`: an absent context key arrives as Jinja's
+   Undefined, not None, and must take the missing branch rather than silently rendering. #}
+{% if value is none or value is undefined %}
+<p class="figure figure-missing" data-testid="penalty-multiplier-missing">
+  Non-delivery penalty: {{ MISSING_LABEL }}.
+</p>
 {% else %}
 <p class="figure" data-testid="penalty-multiplier">
-  Non-delivery penalty: at <strong>{{ "%g"|format(value) }}×</strong> the energy price
-  {% if source | is_assumed %}<strong>(assumed)</strong>{% endif %}
+  Non-delivery penalty: at <strong>{{ value | mult }}× the energy price</strong>
+  per kWh of shortfall.
+  {% if source | is_assumed %}<strong class="assumed-flag">Invented scenario parameter, not a market rule.</strong>{% endif %}
   {{ provenance_tag(source) }}
 </p>
 {% endif %}
@@ -87,45 +130,76 @@
 
 
 {% macro peakers_displaced_line(count, assumption) %}
-{# The loudest guess in the project. The count never appears without the capacity
-   figure it was divided by, and that figure never appears without its source. #}
+{# The loudest guess in the project, and the headline a judge will repeat back. The
+   count never appears without the capacity figure it was divided by, and that figure
+   never appears without its source. #}
 {% if count is none or assumption is none %}
-<p class="figure figure-missing" data-testid="peakers-displaced-missing">Peaker plants displaced: not provided by API.</p>
+<p class="figure figure-missing" data-testid="peakers-displaced-missing">
+  Peaker plants displaced: {{ MISSING_LABEL }}.
+</p>
 {% else %}
 <p class="figure figure-headline" data-testid="peakers-displaced">
-  ≈ <strong>{{ "%.1f"|format(count) }}</strong> peaker plants displaced
-  <span class="figure-basis">(assuming {{ "%g"|format(assumption.value) }} {{ assumption.unit }} per plant {{ provenance_tag(assumption.source) }})</span>
+  ≈ <strong>{{ count | num(1) }}</strong> peaker plants displaced
+  <span class="figure-basis" data-testid="peakers-basis">
+    (assuming {{ assumption.value | num(0) }} {{ assumption.unit }} per plant
+    {{ provenance_tag(assumption.source) }})
+  </span>
 </p>
 {% endif %}
 {% endmacro %}
 
 
-{% macro assumed_field(label, value, unit, source) %}
-{# Generic "labelled number + provenance" row, for product parameters
-   (min_bid_kw, block_length_min, notice_period_min, ...) and anything else that
-   carries an Assumption/Product-style `source`. #}
-<tr class="assumed-field" data-testid="assumed-field-{{ label | lower | replace(' ', '-') }}">
-  <th scope="row">{{ label }}</th>
-  <td>{% if value is none %}<span data-testid="value-missing">not provided by API</span>{% else %}{{ value }}{% if unit %} {{ unit }}{% endif %}{% endif %}</td>
-  <td>{{ provenance_tag(source) }}</td>
+{% macro assumption_row(key, assumption) %}
+{# One row of the ledger's assumptions table: every entry of /api/assumptions
+   (src.market.ASSUMPTIONS, verbatim), value + unit + source + note. #}
+<tr class="assumption-row {{ 'is-assumed' if assumption.source | is_assumed else 'is-sourced' }}"
+    data-testid="assumption-{{ key }}">
+  <th scope="row"><code>{{ key }}</code></th>
+  <td class="figure-value">
+    {{ assumption.value | num(1) }}
+    {% if assumption.unit %}<span class="unit">{{ assumption.unit }}</span>{% endif %}
+  </td>
+  <td>{{ provenance_tag(assumption.source) }}</td>
+  <td class="assumption-note">{{ assumption.note if assumption.note is defined else "" }}</td>
 </tr>
 {% endmacro %}
 
 
-{% macro figure_row(label, key, value) %}
-{# Any field whose unit we infer from its wire-name suffix (contracts/CONVENTIONS.md)
-   rather than one this lane has bespoke rendering for -- used for fields the frozen
-   service contract mentions in prose but does not pin down precisely (see PR notes),
-   so an unexpected-but-present field still renders with a unit rather than being
-   dropped on the floor. #}
-<tr>
+{% macro product_row(label, product, key, digits=0) %}
+{# A product parameter (min_bid_kw, block_length_min, notice_period_min, ...). Its
+   source lives on the Product as a whole, so every parameter of an ASSUMED product is
+   itself flagged assumed -- the issue is explicit that a parameter carrying
+   source="ASSUMED" must not be displayed as sourced. #}
+<tr class="product-row" data-testid="product-{{ key }}">
   <th scope="row">{{ label }}</th>
-  <td>
-    {% if value is none %}
-    <span data-testid="value-missing">unknown</span>
+  <td class="figure-value">
+    {% if has_value(product, key) %}
+    <span data-testid="value-{{ key }}">{{ value_of(product, key) | num(digits) }}</span>
+    {% set u = key | unit_for_key %}
+    {% if u %}<span class="unit">{{ u }}</span>{% endif %}
     {% else %}
-    {{ value }}{% set u = key | unit_for_key %}{% if u %} {{ u }}{% endif %}
+    <span class="value-missing" data-testid="missing-{{ key }}">{{ MISSING_LABEL }}</span>
     {% endif %}
   </td>
+  <td>{{ provenance_tag(value_of(product, "source")) }}</td>
 </tr>
+{% endmacro %}
+
+
+{% macro payload_json(name, data) %}
+{# The API response, handed to this screen's ES module verbatim. The module plots it;
+   it never recomputes a figure from it. Rendered as application/json (not executable)
+   and escaped by Jinja's tojson, so a hostile string in a warning cannot break out. #}
+<script type="application/json" data-testid="payload-{{ name }}" id="payload-{{ name }}">{{ data | tojson }}</script>
+{% endmacro %}
+
+
+{% macro empty_note(what) %}
+{# The API answered, and answered with nothing. Distinct from both an error and a
+   zero: "the response contained no rows" is a fact, and a blank chart with no caption
+   would read as "the number is zero". #}
+<p class="empty-note" data-testid="empty-{{ what }}">
+  The API returned <strong>no {{ what }} rows</strong> for this scenario. This is an
+  empty response, not a measurement of zero.
+</p>
 {% endmacro %}

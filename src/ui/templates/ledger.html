@@ -1,0 +1,114 @@
+{% extends "_base.html" %}
+{% import "_macros.html" as m %}
+
+{# Screen 5 of DEMO.md: the totals, and every assumption behind them from
+   /api/assumptions. Nothing on screen without a traceable source
+   (contracts/CONVENTIONS.md "Provenance rule"). This is where a judge checks whether
+   the confident number they were just shown is a measurement or a guess. #}
+
+{% block content %}
+{% call m.screen_body(error) %}
+
+<section class="ledger-headline">
+  {{ m.peakers_displaced_line(
+        value_of(totals, "peakers_displaced"),
+        value_of(assumptions, "peaker_plant_capacity_mw")) }}
+  {{ m.penalty_multiplier_line(penalty_multiplier, penalty_multiplier_source) }}
+</section>
+
+{% if totals %}
+<table class="figures" data-testid="totals-table">
+  <caption>Scenario totals, as returned in <code>ScenarioResult.totals</code></caption>
+  <thead><tr><th scope="col">Figure</th><th scope="col">Value</th><th scope="col">Note</th></tr></thead>
+  <tbody>
+    {{ m.figure("Energy cost", totals, "energy_cost_eur", 2) }}
+    {{ m.figure("Capacity revenue", totals, "capacity_revenue_eur", 2) }}
+    {{ m.figure("Penalties", totals, "penalty_eur", 2) }}
+    {{ m.figure("Net", totals, "net_eur", 2) }}
+    {{ m.figure("CO₂ saved", totals, "co2_kg_saved", 1) }}
+    {{ m.figure("Peak load, baseline", totals, "peak_kw_baseline", 1) }}
+    {{ m.figure("Peak load, optimised", totals, "peak_kw_optimised", 1) }}
+    {{ m.figure("Pooled firm capacity", totals, "pool_firm_mw", 3) }}
+  </tbody>
+</table>
+{% else %}
+{{ m.empty_note("totals") }}
+{% endif %}
+
+{% if scorecard %}
+<table class="figures" data-testid="scorecard-table">
+  <caption><code>src/sched.evaluate</code> scorecard — recomputed from the schedule,
+    not read off it</caption>
+  <thead><tr><th scope="col">Figure</th><th scope="col">Value</th><th scope="col">Note</th></tr></thead>
+  <tbody>
+    {{ m.figure("Energy cost", scorecard, "energy_cost_eur", 2) }}
+    {{ m.figure("Energy left undelivered", scorecard, "unmet_kwh", 2) }}
+    {{ m.figure("Deadline misses", scorecard, "deadline_misses", 0) }}
+    {{ m.figure("Envelope violation", scorecard, "envelope_violation_kwh", 3) }}
+    {{ m.figure("Floor shortfall", scorecard, "floor_shortfall_kw_min", 2) }}
+    {{ m.figure("Peak load", scorecard, "peak_kw", 1) }}
+  </tbody>
+</table>
+{% endif %}
+
+{% if calibration %}
+<table class="figures" data-testid="calibration-table">
+  <caption>Forecast calibration — realised coverage at each nominal τ. A τ whose
+    coverage is not close to 1 − τ means the promise behind every figure above is
+    mis-sized.</caption>
+  <thead><tr><th scope="col">τ (nominal)</th><th scope="col">Realised coverage</th></tr></thead>
+  <tbody>
+    {% for tau, coverage in calibration.items() %}
+    <tr data-testid="calibration-{{ tau }}">
+      <th scope="row">{{ tau }}</th>
+      <td>{% if coverage is none %}<span class="value-missing">{{ MISSING_LABEL }}</span>{% else %}{{ coverage | rate(2) }}{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="note value-missing" data-testid="calibration-missing">
+  Forecast calibration {{ MISSING_LABEL }}. Without it the τ behind every promise above
+  is unverified — treat the revenue figures as an upper bound.
+</p>
+{% endif %}
+
+<h2>Assumptions — every non-derived number this page quotes</h2>
+{% if assumptions %}
+<table class="assumptions-table" data-testid="assumptions-table">
+  <caption><code>/api/assumptions</code> — <code>src.market.ASSUMPTIONS</code>, verbatim</caption>
+  <thead>
+    <tr><th scope="col">Key</th><th scope="col">Value</th><th scope="col">Provenance</th><th scope="col">Note</th></tr>
+  </thead>
+  <tbody>
+    {% for key, a in assumptions.items() %}
+    {{ m.assumption_row(key, a) }}
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="empty-note" data-testid="assumptions-missing">
+  <strong>/api/assumptions returned nothing.</strong> Every figure above is therefore
+  unattributed — do not quote any of them.
+</p>
+{% endif %}
+
+{% if products %}
+<h2>Product parameters</h2>
+{% for name, product in products.items() %}
+<table class="product-table" data-testid="product-table-{{ name }}">
+  <caption>{{ name }} — reserve product parameters</caption>
+  <thead><tr><th scope="col">Parameter</th><th scope="col">Value</th><th scope="col">Provenance</th></tr></thead>
+  <tbody>
+    {{ m.product_row("Block length", product, "block_length_min", 0) }}
+    {{ m.product_row("Minimum bid", product, "min_bid_kw", 0) }}
+    {{ m.product_row("Bid granularity", product, "granularity_kw", 0) }}
+    {{ m.product_row("Notice period", product, "notice_period_min", 1) }}
+    {{ m.product_row("Penalty multiplier (× energy price)", product, "penalty_multiplier", 1) }}
+  </tbody>
+</table>
+{% endfor %}
+{% endif %}
+
+{% endcall %}
+{% endblock %}

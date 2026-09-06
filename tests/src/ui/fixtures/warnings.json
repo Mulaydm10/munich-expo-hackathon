@@ -1,0 +1,13 @@
+[
+  {
+    "code": "envelope_clipped",
+    "message": "thermal_envelope clipped 214 of 9,600 intervals",
+    "value": 0.0223,
+    "unit": "fraction of intervals"
+  },
+  {
+    "code": "forecast_uncalibrated",
+    "message": "forecast quantiles uncalibrated for 3 sites; tau=0.05 coverage was 0.881"
+  },
+  "carbon intensity table missing for 2026-10-25; annual mean substituted"
+]

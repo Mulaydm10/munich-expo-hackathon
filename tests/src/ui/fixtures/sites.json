@@ -1,0 +1,49 @@
+[
+  {
+    "site_id": "DE-MUC-0001",
+    "lat": 48.1372,
+    "lon": 11.5756,
+    "firm_kw": 612.5,
+    "rated_kw": 900.0,
+    "profile": "depot",
+    "revenue_eur": 1841.2,
+    "co2_kg": 402.7
+  },
+  {
+    "site_id": "DE-MUC-0002",
+    "lat": 48.1601,
+    "lon": 11.61,
+    "firm_kw": 244.0,
+    "rated_kw": 400.0,
+    "profile": "depot",
+    "revenue_eur": 733.1,
+    "co2_kg": 160.4
+  },
+  {
+    "site_id": "DE-BER-0007",
+    "lat": 52.52,
+    "lon": 13.405,
+    "firm_kw": 88.75,
+    "rated_kw": 150.0,
+    "profile": "retail",
+    "revenue_eur": 266.3,
+    "co2_kg": 58.1
+  },
+  {
+    "site_id": "DE-HAM-0031",
+    "lat": 53.5511,
+    "lon": 9.9937,
+    "firm_kw": 0.0,
+    "rated_kw": 120.0,
+    "profile": "retail",
+    "revenue_eur": 0.0,
+    "co2_kg": 0.0
+  },
+  {
+    "site_id": "DE-KOE-0114",
+    "lat": 50.9375,
+    "lon": 6.9603,
+    "rated_kw": 260.0,
+    "profile": "depot"
+  }
+]

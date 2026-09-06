@@ -1,0 +1,69 @@
+{% extends "_base.html" %}
+{% import "_macros.html" as m %}
+
+{# Screen 1 of DEMO.md: every site from /api/sites, coloured by firm_kw, zoom Munich
+   <-> country. Drawn on a single <canvas> by static/screen-map.js: at national scale
+   there are tens of thousands of sites and contracts/src/ui.md forbids putting that
+   many DOM nodes on the page, so nothing here loops over `sites` in HTML. The rows go
+   to the module as JSON, verbatim. #}
+
+{% block content %}
+{% call m.screen_body(error) %}
+
+<section class="screen-lede">
+  <p data-testid="site-count">
+    <strong>{{ sites | length }}</strong> sites in this response
+    (<code>/api/sites</code>). Colour <em>and</em> size show each site's
+    <code>firm_kw</code> — the reduction it can promise at the scenario's τ.
+  </p>
+</section>
+
+{% if sites %}
+<figure class="map-figure">
+  <canvas id="map-canvas" class="map-canvas" width="1200" height="800"
+          data-testid="map-canvas"
+          aria-label="Map of German charge-point sites, sized and coloured by firm capacity in kW"
+          role="img"></canvas>
+  <figcaption>
+    Drag to pan, scroll or <kbd>+</kbd>/<kbd>-</kbd> to zoom. At country zoom the dots
+    are binned into cells and the cell label is the <strong>number of sites</strong> in
+    it — never a summed capacity, which this page is not allowed to compute.
+  </figcaption>
+</figure>
+
+<div class="map-controls">
+  <button type="button" id="zoom-munich" data-testid="zoom-munich">Zoom to Munich</button>
+  <button type="button" id="zoom-country" data-testid="zoom-country">Zoom to Germany</button>
+  <output id="map-readout" class="map-readout" data-testid="map-readout"></output>
+</div>
+
+<table class="legend" data-testid="map-legend">
+  <caption>Legend — firm capacity per site (display buckets only; each site's own
+    <code>firm_kw</code> is shown on hover)</caption>
+  <thead><tr><th scope="col">Range</th><th scope="col">Mark</th></tr></thead>
+  <tbody>
+    {% for low, high, mark in MAP_LEGEND_BINS %}
+    <tr data-testid="legend-bin-{{ loop.index }}">
+      <th scope="row">
+        {{ low | num(0) }}{% if high is not none %}–{{ high | num(0) }}{% else %}+{% endif %}
+        <span class="unit">kW</span>
+      </th>
+      <td>{{ mark }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+{{ m.payload_json("sites", sites) }}
+{% else %}
+{{ m.empty_note("site") }}
+{% endif %}
+
+{% endcall %}
+{% endblock %}
+
+{% block scripts %}
+{% if sites and not error %}
+<script type="module" src="{{ STATIC }}/screen-map.js"></script>
+{% endif %}
+{% endblock %}

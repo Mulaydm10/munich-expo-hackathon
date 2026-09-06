@@ -1,0 +1,58 @@
+{# Page skeleton shared by all five screens (contracts/src/ui.md "Screens").
+
+   Deliberately self-contained: one stylesheet and one or two ES modules, all served
+   from this lane's own static/ mount. No web fonts, no analytics, no third-party
+   anything -- "loads with the API reachable and nothing else" is a hard guarantee of
+   contracts/src/ui.md, and a demo laptop on conference wifi is the target. #}
+{% import "_macros.html" as macros %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FlexGrid — {{ SCREEN_TITLES[screen] }}</title>
+<link rel="stylesheet" href="{{ STATIC }}/flexgrid.css">
+</head>
+<body class="screen-{{ screen }}">
+<header class="topbar">
+  <p class="brand">FlexGrid</p>
+  <nav aria-label="Demo screens">
+    <ol class="screen-nav">
+      {% for s in SCREENS %}
+      <li class="{{ 'is-current' if s == screen else '' }}">
+        {% if s == screen %}
+        <span aria-current="page" data-testid="nav-current">{{ loop.index }}. {{ s }}</span>
+        {% else %}
+        <a href="/{{ s }}">{{ loop.index }}. {{ s }}</a>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ol>
+  </nav>
+  <p class="kbd-hint" data-testid="kbd-hint">
+    Keyboard: <kbd>space</kbd> play / pause &nbsp; <kbd>d</kbd> dispatch
+  </p>
+</header>
+
+<h1 class="screen-title">{{ SCREEN_TITLES[screen] }}</h1>
+
+{% if not error %}
+{{ macros.warnings_list(warnings) }}
+{% endif %}
+
+<main>
+{% block content %}{% endblock %}
+</main>
+
+<footer class="page-footer">
+  <p>
+    All times shown in <strong>Europe/Berlin</strong>; the wire is tz-aware UTC
+    (contracts/CONVENTIONS.md). Every figure on this page came from the API — this page
+    computes nothing.
+  </p>
+</footer>
+
+<script type="module" src="{{ STATIC }}/keyboard.js"></script>
+{% block scripts %}{% endblock %}
+</body>
+</html>
