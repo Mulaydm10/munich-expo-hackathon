@@ -15,16 +15,30 @@
 
 {# The button POSTs a `ReductionEvent` -- {call_t, notice_min, duration_min,
    reduction_kw}, the field names src/sched/api.py declares and the shape
-   contracts/src/service.md's dispatch route requires. Every field is the API's; this
-   page picks none of them, because picking a reduction size or a notice period in
-   JavaScript is computing, which contracts/src/ui.md forbids this lane outright.
-   The event is handed to the module as JSON, exactly like every other payload -- the
-   previous version POSTed the literal body "{}", which a validating service rejects,
-   so the headline action of the demo could not produce promised-vs-delivered at all. #}
-{% set event_ok = has_value(reduction_event, "call_t")
-                  and has_value(reduction_event, "notice_min")
-                  and has_value(reduction_event, "duration_min")
-                  and has_value(reduction_event, "reduction_kw") %}
+   contracts/src/service.md's dispatch route requires. `src/service` may supply this
+   event directly; when it does not, `api.render()` builds a default from the day's own
+   timeseries (`api.default_reduction_event()`) so the button is not permanently dead
+   (issue #40 finding 1). This template still picks none of the numbers itself --
+   choosing a reduction size or a notice period in a Jinja template or in JavaScript is
+   computing, which contracts/src/ui.md forbids this lane outright; that computation
+   lives once, server-side, in api.py. The event is handed to the module as JSON,
+   exactly like every other payload -- an earlier version POSTed the literal body "{}",
+   which a validating service rejects, so the headline action of the demo could not
+   produce promised-vs-delivered at all.
+
+   Presence is not validity (issue #40 finding 2): `has_value()` only proves the four
+   keys exist and are non-None, so a string, a bool, a naive timestamp or a negative
+   duration would all enable the button and get POSTed verbatim. `event_ok` therefore
+   uses `reduction_event_valid()`, which checks the real wire shape the service's
+   dispatch route requires. `event_present` is kept separately so a present-but-invalid
+   event (a real service bug) reads differently on screen from an absent one -- "zero
+   and unknown must never look the same" applies here too: absent and invalid are two
+   different facts an operator needs. #}
+{% set event_present = has_value(reduction_event, "call_t")
+                       and has_value(reduction_event, "notice_min")
+                       and has_value(reduction_event, "duration_min")
+                       and has_value(reduction_event, "reduction_kw") %}
+{% set event_ok = reduction_event_valid(reduction_event) %}
 <section class="screen-lede">
   <button type="button" id="dispatch" class="dispatch-button" data-testid="dispatch-button"
           aria-keyshortcuts="d"
@@ -49,6 +63,16 @@
     of notice.
   </p>
   {{ m.payload_json("reduction-event", reduction_event) }}
+  {% elif event_present %}
+  <p class="value-missing" data-testid="reduction-event-invalid">
+    The API provided a <code>ReductionEvent</code>, but it does not match the wire shape
+    <code>POST /api/scenario/{id}/dispatch</code> requires — the button cannot fire.
+    That route needs a parseable, timezone-aware <code>call_t</code>; finite
+    <code>notice_min</code> ≥ 0; finite <code>duration_min</code> &gt; 0; finite
+    <code>reduction_kw</code> ≥ 0; and no field beyond those four. This is present but
+    invalid data, not missing data — a validating service would reject this exact
+    payload.
+  </p>
   {% else %}
   <p class="value-missing" data-testid="reduction-event-missing">
     No <code>ReductionEvent</code> provided by API — the button cannot fire. It needs
