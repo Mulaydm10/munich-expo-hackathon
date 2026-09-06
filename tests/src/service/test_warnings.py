@@ -13,6 +13,7 @@ import pandas as pd
 import pytest
 
 from src.fleet import api as fleet
+from src.forecast import api as forecast
 from src.service import _pipeline as pipeline
 
 from .conftest import (
@@ -258,6 +259,55 @@ def test_forecast_and_fleet_telemetry_is_forwarded_with_its_rate(client):
     assert "forecast_quantile_crossing" in forwarded
     assert "sessions_dropped_no_free_point" in forwarded
     assert forwarded["sessions_dropped_no_free_point"]["detail"]["dropped"] > 0
+
+
+def test_forecast_fallback_rows_fires_only_when_the_real_rate_is_positive(client, monkeypatch):
+    """`forecast_fallback_rows`'s own docstring: "some rows had no usable feature vector
+    (or an unseen site) and fell back to the climatological quantiles". No fixture in this
+    suite ever forces `model.last_predict_fallback_rate` above 0 (every existing test uses
+    the real forecast model, whose fallback rate is exactly 0.0 on this fixture's data --
+    confirmed directly against `_forecast()`), which meant nothing pinned this warning's
+    "it does fire" end: `warns.rate("forecast_fallback_rows", ..., model.last_predict_fallback_rate)`
+    could be permanently replaced with `warns.rate("forecast_fallback_rows", ..., None)` --
+    silently and forever suppressing it -- without a single test in the suite noticing.
+
+    Both ends are pinned here, in one test: the real (unpatched) model, on the same fixture
+    every other test uses, never reports it; a model whose `last_predict_fallback_rate` is
+    forced positive (the only lever available without touching `src/forecast`, whose
+    internals this lane may not reach into) does, with the forwarded rate intact.
+    """
+    baseline = warm(client, {**FEASIBLE, "seed": 60101})
+    assert "forecast_fallback_rows" not in codes(baseline)
+
+    real_fit = forecast.fit
+
+    class _ForcedFallbackModel:
+        """Delegates to a real, correctly-fitted model for everything except the one
+        telemetry field this test needs to force -- `predict()`'s actual output (and
+        therefore every downstream figure) is untouched and still real."""
+
+        def __init__(self, real_model, forced_rate: float) -> None:
+            self._real = real_model
+            self._forced_rate = forced_rate
+
+        def predict(self, *args, **kwargs):
+            return self._real.predict(*args, **kwargs)
+
+        @property
+        def last_predict_crossing_rate(self):
+            return self._real.last_predict_crossing_rate
+
+        @property
+        def last_predict_fallback_rate(self):
+            return self._forced_rate
+
+    def fake_fit(*args, **kwargs):
+        return _ForcedFallbackModel(real_fit(*args, **kwargs), forced_rate=0.25)
+
+    monkeypatch.setattr(forecast, "fit", fake_fit)
+    forced = warm(client, {**FEASIBLE, "seed": 60102})
+    assert "forecast_fallback_rows" in codes(forced)
+    assert detail(forced, "forecast_fallback_rows")["rate"] == pytest.approx(0.25)
 
 
 def test_the_caveats_that_always_apply_say_which_figure_is_null(client):

@@ -119,6 +119,48 @@ def test_a_cold_scenario_answers_202_with_a_job_id_and_progress(client):
     assert client.post("/api/scenario", json=body).status_code == 200
 
 
+def test_cold_run_progress_field_carries_real_sub_integer_precision(client, monkeypatch):
+    """The wire `progress` field must be the real fraction of stages completed, not merely
+    a number inside `[0.0, 1.0]` -- a bounds check like the one in
+    `test_a_cold_scenario_answers_202_with_a_job_id_and_progress` above is satisfied even by
+    a `Job.to_dict()` that rounds every intermediate value down to 0.0 or up to 1.0, which
+    is exactly what happened here (`round(float(self.progress), 4)` mutated to
+    `round(..., 0)` left the whole suite green). This reads the actual JSON `progress`
+    field off a genuine cold-run poll caught mid-flight, not the raw `pipeline.build()`
+    callback (`test_progress_names_the_stage_it_reached` below reads that instead, which is
+    why it did not catch the rounding bug either), and pins that it carries real
+    fractional precision.
+    """
+    real_build = pipeline.build
+
+    def paced_build(spec, *, root=None, progress=None):
+        if progress is not None:
+            progress(0.6789, "forecast:fit")
+        time.sleep(0.4)
+        return real_build(spec, root=root, progress=progress)
+
+    monkeypatch.setattr(pipeline, "build", paced_build)
+
+    body = {**FEASIBLE, "seed": 60999}  # a spec no other test has warmed
+    client.post("/api/scenario", json=body)
+
+    deadline = time.monotonic() + 5.0
+    caught = None
+    while time.monotonic() < deadline:
+        payload = client.post("/api/scenario", json=body).json()
+        if payload.get("status") == "running" and payload.get("progress", 0.0) not in (0.0, 1.0):
+            caught = payload
+            break
+        if payload.get("status") not in ("running", None) and "progress" not in payload:
+            break  # became a 200 ScenarioResult before we caught the paced fraction
+        time.sleep(0.01)
+
+    assert caught is not None, "never observed the job mid-flight with a non-edge progress value"
+    assert caught["progress"] == pytest.approx(0.6789), (
+        f"got {caught['progress']!r}: the real fraction was rounded away"
+    )
+
+
 def test_progress_names_the_stage_it_reached(rooted, full_root):
     """`progress` is stages completed, so it must move and end at 1.0 -- not a timer."""
     rooted(full_root)
