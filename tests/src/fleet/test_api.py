@@ -167,6 +167,61 @@ def test_to_load_asap_conserves_energy_per_site() -> None:
 
 
 # ---------------------------------------------------------------------------
+# to_load emits a dense grid: zero must be distinguishable from missing (design's post-#9 find).
+# `src/market`'s `settle()` rejects incomplete 15-minute coverage, so a sparse baseline is a
+# blocker, not a follow-up.
+# ---------------------------------------------------------------------------
+
+def _assert_dense_grid(sessions: pd.DataFrame, load: pd.DataFrame) -> None:
+    """Independent density check: the expected grid is computed straight from `sessions`
+    (floor of the earliest t_arrive to ceil of the latest t_depart), never from `load`'s own
+    nunique() -- a test that derives its expectation from the thing under test can't fail."""
+    freq_delta = pd.Timedelta("15min")
+    span_start = sessions["t_arrive"].min().floor(freq_delta)
+    span_end = sessions["t_depart"].max().ceil(freq_delta)
+    expected_t = pd.date_range(span_start, span_end, freq=freq_delta, inclusive="left")
+    n_sites = sessions["site_id"].nunique()
+
+    assert len(load) == len(expected_t) * n_sites
+    assert load.duplicated(subset=["t", "site_id"]).sum() == 0
+
+    # tz-aware UTC, interval-start, contiguous, no gaps -- checked per site against the exact
+    # expected index, not just "no NaN after a pivot" (a pivot can silently reindex away gaps).
+    assert str(load["t"].dt.tz) == "UTC"
+    assert (load["t"].dt.floor(freq_delta) == load["t"]).all()  # interval-start alignment
+    for _, grp in load.groupby("site_id"):
+        got_t = pd.DatetimeIndex(grp.sort_values("t")["t"])
+        assert got_t.equals(expected_t)
+
+    # an idle interval must carry an explicit zero, not be absent.
+    assert (load["load_kw"] == 0.0).any()
+
+
+@pytest.mark.parametrize("policy", ["asap", "even"])
+def test_to_load_emits_dense_grid(policy: str) -> None:
+    sites = _sites()
+    days = [date(2026, 3, 2), date(2026, 3, 3), date(2026, 3, 4)]
+    weather = _weather(10.0, days)
+    sessions = api.synthesise_sessions(sites, weather, days, seed=13)
+    load = api.to_load(sessions, policy=policy)
+    _assert_dense_grid(sessions, load)
+
+
+@pytest.mark.parametrize("policy", ["asap", "even"])
+def test_to_load_dense_grid_across_dst_transition(policy: str) -> None:
+    # contracts/CONVENTIONS.md calls out 2026-10-25 by name: Europe/Berlin falls back from CEST
+    # to CET that day (a local 25h day), and "must not crash a pipeline" -- not just tolerate it,
+    # the dense grid invariants must hold exactly across the boundary too.
+    sites = _sites()
+    days = [date(2026, 10, 24), date(2026, 10, 25), date(2026, 10, 26)]
+    weather = _weather(8.0, days)
+    sessions = api.synthesise_sessions(sites, weather, days, seed=21)
+    assert len(sessions) > 0
+    load = api.to_load(sessions, policy=policy)
+    _assert_dense_grid(sessions, load)
+
+
+# ---------------------------------------------------------------------------
 # cold-weather sign
 # ---------------------------------------------------------------------------
 

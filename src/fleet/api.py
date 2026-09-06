@@ -37,7 +37,12 @@ class FleetParams:
     arrival_mode_h: float              # local-time hour of peak plug-in
     arrival_spread_h: float            # std-dev (hours) of arrival time around the mode
     dwell_mean_h: float                # mean dwell time in hours (exponential draw)
-    energy_mean_kwh: float             # mean energy delivered per full (non-top-up) session
+    energy_mean_kwh: float             # mean energy of a full (non-top-up) session at the >=10C
+                                        # reference temperature only -- NOT a general statement of
+                                        # what synthesise_sessions emits: temp_penalty_pct_per_c
+                                        # scales every session's energy up below 10C, and the two
+                                        # are independent knobs, so the emitted mean tracks the
+                                        # stated value only at/above the reference temperature
     energy_cv: float                   # coefficient of variation of energy_kwh
     soc_topup_share: float             # fraction of sessions that are short top-ups
     temp_penalty_pct_per_c: float      # % extra energy per degree C below 10 C
@@ -228,6 +233,13 @@ def synthesise_sessions(
     per-row `energy_clipped` column stays True only for the residual case this still can't cover
     (an infeasible draw is clipped and counted, never emitted, per contracts/src/fleet.md).
 
+    `FleetParams.energy_mean_kwh` is the mean of a full (non-top-up) session at the >=10C
+    reference temperature specifically, not a general claim about what this function emits: the
+    cold-weather penalty (`temp_penalty_pct_per_c`) and the top-up share (`soc_topup_share`) each
+    scale a session's energy independently of this parameter, so the realised mean equals the
+    stated value only in the reference-temperature, non-top-up case -- below 10C, or averaged
+    across top-ups, the emitted mean is lower than the stated `energy_mean_kwh` by design.
+
     Temperature input is national in v1: `_daily_mean_temp_c` averages every weather station, so
     every site sees the same ambient temperature on a given day and site responses are perfectly
     correlated by construction -- a known limitation (design is tracking the per-site join as a
@@ -395,10 +407,22 @@ def to_load(
     this project exists to improve on). `even` spreads energy_kwh evenly across the whole dwell
     window [t_arrive, t_depart). Conserves energy per site: sum(load_kw) * bin_hours ==
     sum(energy_kwh), within float tolerance.
+
+    Returns a **dense** `t x site_id` grid over the span covered by `sessions` (floor of the
+    earliest `t_arrive` to ceil of the latest `t_depart`, across every site in the input): every
+    combination of interval and `site_id` present in `sessions` gets exactly one row --
+    `len(out) == out["t"].nunique() * out["site_id"].nunique()` always holds. Intervals with no
+    charging at a site get an explicit `load_kw == 0.0` row rather than no row at all, so a
+    downstream consumer can distinguish "0 kW" from "no data" (contracts/CONVENTIONS.md) -- this
+    matters here specifically because zero is the overwhelmingly common value for an idle
+    overnight baseline, and `src/market`'s `settle()` rejects incomplete 15-minute coverage
+    outright.
     """
     _require_columns(sessions, _SESSION_LOAD_COLUMNS, label="sessions")
     if policy not in ("asap", "even"):
         raise ValueError(f"unknown policy: {policy!r}")
+    if sessions.empty:
+        return pd.DataFrame(columns=["t", "site_id", "load_kw"])
 
     freq_delta = pd.Timedelta(freq)
     records: list[tuple[pd.Timestamp, object, float]] = []
@@ -418,10 +442,23 @@ def to_load(
         for bin_start, load_kw in _bin_contributions(start, end, rate_kw, freq_delta):
             records.append((bin_start, row.site_id, load_kw))
 
-    out = pd.DataFrame(records, columns=["t", "site_id", "load_kw"])
-    if out.empty:
-        return out
-    out = out.groupby(["t", "site_id"], as_index=False)["load_kw"].sum()
+    sparse = pd.DataFrame(records, columns=["t", "site_id", "load_kw"])
+    if not sparse.empty:
+        sparse["t"] = pd.to_datetime(sparse["t"], utc=True)
+        sparse = sparse.groupby(["t", "site_id"], as_index=False)["load_kw"].sum()
+
+    # Dense grid over the full span, independent of policy: `asap` sessions can stop drawing
+    # power well before t_depart once energy_kwh is delivered, but the span is the dwell window
+    # (t_arrive..t_depart) so both policies produce the same t x site_id shape and only differ in
+    # which cells are zero.
+    span_start = sessions["t_arrive"].min().floor(freq_delta)
+    span_end = sessions["t_depart"].max().ceil(freq_delta)
+    grid_t = pd.date_range(span_start, span_end, freq=freq_delta, inclusive="left")
+    site_ids = sorted(sessions["site_id"].unique())
+    grid = pd.MultiIndex.from_product([grid_t, site_ids], names=["t", "site_id"]).to_frame(index=False)
+
+    out = grid.merge(sparse, on=["t", "site_id"], how="left")
+    out["load_kw"] = out["load_kw"].fillna(0.0)
     out["t"] = pd.to_datetime(out["t"], utc=True)
     return out.sort_values(["site_id", "t"]).reset_index(drop=True)
 
