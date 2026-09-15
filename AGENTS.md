@@ -55,7 +55,7 @@ gh api repos/{owner}/{repo}/git/refs -f ref=refs/heads/claim/$ISSUE -f sha=$SHA
 - The ref name is `claim/<n>` only — no device id — so exactly one ref can exist per issue.
 - Then (advisory): comment exactly `claimed by <worker-id> at <ISO-8601>` as the first line, swap label to `status:claimed`.
   The worker id lives in this comment and in commit trailers, never in the ref. Label swaps are not atomic; bootstrap reconciles, never trusts.
-- Work in a dedicated worktree: `git worktree add ../wt-<repo>-<n> claim/<n>`. Never share a checkout between sessions.
+- Work in a dedicated worktree, all under one folder beside the clone: `git worktree add ../worktrees/<repo>/claim-<n> claim/<n>`. Never share a checkout between sessions.
 - Dispatched/remote workers claim for themselves. A control node may suggest tasks, never claim on another's behalf.
 - Precedence: a claim ref beats any label. If they disagree, fix the label, never the ref.
 - Relayed intent is not authorization: if a step needs a human decision, it needs a human-authored comment/issue.

@@ -33,12 +33,12 @@ Every write I perform — `gh api ... git/refs`, `gh issue comment`, `gh issue e
 ## 4. Local layout and multi-repo
 
 ```
-~/agent/<owner>/<repo>/repo/              one clone per repo
-~/agent/<owner>/<repo>/wt/claim-<n>/      one worktree per claim
+<projects>/<repo>/                        one clone per repo
+<projects>/worktrees/<repo>/claim-<n>/    one worktree per claim; every repo under one folder
 ~/.local/state/agent-bus/<owner>/<repo>/  etag cache, last-seen ids
 ```
 
-One worktree per claim is mandatory, not advisory. Two sessions sharing a clone share `HEAD`, the index and local refs; they corrupt each other quietly rather than loudly, which is the worst failure shape. Everything except `device.id` is keyed by `<owner>/<repo>` — in particular the ETag cache, since a 304 from one repo would otherwise mask changes in another.
+One worktree per claim is mandatory, not advisory, and all of them sit under the single `worktrees/` folder, never beside the clones: the earlier `../wt-<repo>-<n>` layout left one hackathon with fourteen `wt-*` directories interleaved with the projects. `bus.sh` anchors the folder on the main clone, so a claim made from inside a worktree cannot nest. Two sessions sharing a clone share `HEAD`, the index and local refs; they corrupt each other quietly rather than loudly, which is the worst failure shape. Everything except `device.id` is keyed by `<owner>/<repo>` — in particular the ETag cache, since a 304 from one repo would otherwise mask changes in another.
 
 ## 5. Work discovery
 
@@ -50,7 +50,7 @@ One worktree per claim is mandatory, not advisory. Two sessions sharing a clone 
 
 ```
 ref-create claim/<n>          201 -> proceed | 422 -> next issue
-worktree add wt/claim-<n>
+worktree add worktrees/<repo>/claim-<n>
 implement inside the lane
 run verify: locally           advisory only, see below
 push; open PR "#<n>: ..."     label -> status:review
