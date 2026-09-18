@@ -66,9 +66,16 @@ export function extent(rows, key) {
 // screen. ONE helper, used for both hover and drag, so the two paths cannot drift
 // apart the way they did (#40).
 export function toCanvasPoint(canvas, offsetX, offsetY) {
-  const rect = canvas.getBoundingClientRect();
-  const scaleX = rect.width > 0 ? canvas.width / rect.width : 1;
-  const scaleY = rect.height > 0 ? canvas.height / rect.height : 1;
+  // `offsetX`/`offsetY` are measured from the PADDING edge, so they must be scaled by a
+  // padding-box width -- `clientWidth`/`clientHeight`. `getBoundingClientRect()` returns
+  // the BORDER box, and `flexgrid.css` gives every canvas a 2px border, so using it
+  // scaled every position by (content + 4px) / content: a compression toward the origin
+  // that exceeded the 14px hit radius near the right and bottom edges and picked the
+  // wrong site, or none (issue #43 finding 2).
+  const boxW = canvas.clientWidth;
+  const boxH = canvas.clientHeight;
+  const scaleX = boxW > 0 ? canvas.width / boxW : 1;
+  const scaleY = boxH > 0 ? canvas.height / boxH : 1;
   return { x: offsetX * scaleX, y: offsetY * scaleY };
 }
 

@@ -242,9 +242,10 @@ def test_the_map_converts_pointer_coordinates_through_one_shared_helper() -> Non
     """
     payload_src = source("payload.js")
     assert "export function toCanvasPoint(canvas, offsetX, offsetY)" in payload_src
-    assert "getBoundingClientRect" in payload_src
-    assert "canvas.width / rect.width" in payload_src
-    assert "canvas.height / rect.height" in payload_src
+    # The denominator is the PADDING box (`clientWidth`/`clientHeight`), not the border
+    # box -- see `test_hit_test_scales_by_the_padding_box_not_the_border_box` for why.
+    assert "canvas.width / boxW" in payload_src
+    assert "canvas.height / boxH" in payload_src
 
     js = source("screen-map.js")
     assert re.search(r'import \{[^}]*\btoCanvasPoint\b[^}]*\} from "\./payload\.js"', js)
@@ -260,6 +261,43 @@ def test_the_map_converts_pointer_coordinates_through_one_shared_helper() -> Non
     stripped = re.sub(r"toCanvasPoint\(canvas, ev\.offsetX, ev\.offsetY\)", "", code_lines)
     assert "ev.offsetX" not in stripped and "ev.offsetY" not in stripped, (
         "a raw ev.offsetX/offsetY outside the shared conversion means an unconverted path"
+    )
+
+
+def test_hit_test_scales_by_the_padding_box_not_the_border_box() -> None:
+    """#43 finding 2. `toCanvasPoint` scaled `ev.offsetX/offsetY` by
+    `getBoundingClientRect().width/.height`. That rect is the BORDER box; `offsetX` and
+    `offsetY` are measured from the PADDING edge. `flexgrid.css` gives every canvas a
+    `2px` border, so every conversion was scaled by `(content + 4px) / content` --
+    compressing positions toward the origin, worst near the right and bottom edges, where
+    the error exceeded the 14px hit radius and selected the wrong site or none at all.
+
+    The previous browser probe missed this because it used a canvas with no border. A
+    harness that does not reproduce the real CSS proves nothing about the real page, so
+    this test asserts BOTH halves: that the border is still there, and that the scaling
+    no longer uses the box that includes it. If the border is ever dropped from the CSS,
+    this test fails loudly rather than silently becoming vacuous.
+
+    SOURCE ASSERTION, NOT EXECUTION.
+    """
+    css = (api.STATIC_DIR / "flexgrid.css").read_text(encoding="utf-8")
+    canvas_rule = next(
+        (ln for ln in css.splitlines() if ln.strip().startswith("canvas {")), ""
+    )
+    assert canvas_rule, "no `canvas {` rule -- this test's premise must be re-checked"
+    assert "border:" in canvas_rule, (
+        "the canvas border is what made the border box wrong; if it is gone, re-derive "
+        "the correct denominator rather than deleting this test"
+    )
+
+    payload_src = source("payload.js")
+    code = _code_only(payload_src)
+    fn = code.split("export function toCanvasPoint(", 1)[1].split("\n}", 1)[0]
+    assert "clientWidth" in fn and "clientHeight" in fn, (
+        "offsetX/offsetY are padding-edge relative and must be scaled by the padding box"
+    )
+    assert "getBoundingClientRect" not in fn, (
+        "getBoundingClientRect is the border box -- the exact defect in #43 finding 2"
     )
 
 
