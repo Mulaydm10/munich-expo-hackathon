@@ -408,7 +408,7 @@ def build(spec: ScenarioSpec, *, root=None, progress=None) -> tuple[dict, LiveSc
     baseline_day = base_load[(base_load["t"] >= day_start) & (base_load["t"] < day_end)]
     baseline_by_t = _by_t(baseline_day, "load_kw", day_index)
     optimised, scorecard, _unscheduled_sites = _schedule(
-        spec, sessions_day, envelope, prices_day, baseline_day, warns
+        spec, sessions_day, envelope, prices_day, baseline_day, day_index, warns
     )
 
     # -- market: money and carbon -------------------------------------------
@@ -801,7 +801,7 @@ def _energy_kwh(load_kw: pd.DataFrame | None) -> float | None:
     return float((load_kw["load_kw"].to_numpy(dtype=float) * np.asarray(per_row, dtype=float)).sum())
 
 
-def _schedule(spec, sessions_day, envelope, prices_day, baseline_day, warns):
+def _schedule(spec, sessions_day, envelope, prices_day, baseline_day, day_index, warns):
     """The optimised schedule and `src/sched`'s own scorecard, solved per site.
 
     `contracts/src/service.md` names "infeasible site" as a `warnings[]` case, so one
@@ -840,12 +840,49 @@ def _schedule(spec, sessions_day, envelope, prices_day, baseline_day, warns):
         "the optimised schedule minimises energy cost plus a demand charge on each site's daily peak (src.sched.DEMAND_CHARGE_EUR_PER_KW_DAY); source is ASSUMED, see src/sched",
         eur_per_kw_day=float(sched.DEMAND_CHARGE_EUR_PER_KW_DAY),
     )
+    sessions_for_schedule = sessions_day.copy()
+    grid = pd.DatetimeIndex(day_index).sort_values().unique()
+    if len(grid) >= 2:
+        gaps = grid.to_series().diff().shift(-1)
+        gaps.iloc[-1] = gaps.iloc[-2]
+        dt_h = float((gaps.dt.total_seconds() / 3600.0).median())
+    else:
+        dt_h = 0.0
+    clamped_count = 0
+    clamped_kwh = 0.0
+    dropped_sessions = 0
+    keep = []
+    for row in sessions_for_schedule.itertuples():
+        n_points = int(((grid >= row.t_arrive) & (grid < row.t_depart)).sum())
+        deliverable = float(row.max_power_kw) * n_points * dt_h
+        if deliverable <= 0.0:
+            dropped_sessions += 1
+            keep.append(False)
+        else:
+            keep.append(True)
+            if row.energy_kwh > deliverable + 1e-9:
+                clamped_count += 1
+                clamped_kwh += float(row.energy_kwh - deliverable)
+                sessions_for_schedule.at[row.Index, "energy_kwh"] = deliverable
+    sessions_for_schedule = sessions_for_schedule.loc[keep].copy()
+    if clamped_count or dropped_sessions:
+        warns.add(
+            "session_energy_clamped_to_grid",
+            "src/service",
+            "sessions whose energy_kwh exceeds what max_power_kw can deliver over the "
+            "15-min grid points inside their dwell were clamped to that amount before "
+            "scheduling (the remainder is a partial-interval remnant the grid cannot "
+            "represent); sessions with no grid point inside their dwell were left unscheduled",
+            count=int(clamped_count),
+            clamped_kwh=float(clamped_kwh),
+            dropped_sessions=int(dropped_sessions),
+        )
     site_ids = sorted(str(s) for s in pd.Series(envelope["site_id"]).unique())
 
     def _solve_sites(prices_for_lp):
         frames, kept_sessions, infeasible = [], [], []
         for site_id in site_ids:
-            site_sessions = sessions_day[sessions_day["site_id"] == site_id]
+            site_sessions = sessions_for_schedule[sessions_for_schedule["site_id"] == site_id]
             if site_sessions.empty:
                 continue
             site_envelope = envelope[envelope["site_id"] == site_id]

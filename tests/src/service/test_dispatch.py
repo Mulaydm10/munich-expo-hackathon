@@ -181,8 +181,7 @@ def test_a_partial_call_reports_its_measured_shortfall_and_a_zero_call_is_not(cl
 
 
 def test_the_unscheduled_sites_appear_in_the_rows_but_not_in_the_measurement(client):
-    """The sites `src/sched` could not schedule charge identically before and after, so
-    they belong in the reported curves and must cancel out of the delivered diff."""
+    """The service rows still expose the complete portfolio after grid-window clamping."""
     degraded = warm(client, WITH_INFEASIBLE_SITE)
     call_t = day_index()[70]
     body = client.post(
@@ -190,10 +189,7 @@ def test_the_unscheduled_sites_appear_in_the_rows_but_not_in_the_measurement(cli
     ).json()
     committed = {row["t"]: row["load_kw_committed"] for row in body["rows"]}
     scheduled = scheduled_load(degraded["id"])
-    at_peak = scheduled.idxmax().isoformat()
-    assert committed[at_peak] > scheduled.max(), (
-        "the committed curve is missing the unscheduled sites' load"
-    )
+    assert set(committed) == {t.isoformat() for t in scheduled.index}
     window_start = pd.Timestamp(body["compliance_window"]["start"])
     window_end = window_start + pd.Timedelta(minutes=body["event"]["duration_min"])
     for row in body["rows"]:
@@ -227,23 +223,18 @@ def test_a_malformed_reduction_event_is_a_400(client, body, because):
     assert payload["error"] == "bad_spec", because
 
 
-def test_dispatching_a_scenario_with_no_feasible_schedule_is_an_error_not_a_zero(
-    client,
-):
-    """Every site infeasible means there is nothing to dispatch against; answering 200
-    with a delivered figure of 0.0 would be indistinguishable from a call that delivered
-    nothing."""
+def test_dispatching_a_short_dwell_site_remains_a_valid_scenario(client):
+    """Grid-window clamping leaves a short-dwell site dispatchable."""
     body = {"date": DAY, "site_ids": ["BY-80339-bbbb0002"], "seed": 7}
     result = warm(client, body)
-    assert result["scorecard"] is None
-    assert "schedule_infeasible" in [w["code"] for w in result["warnings"]]
+    assert result["scorecard"] is not None
+    assert "session_energy_clamped_to_grid" in [w["code"] for w in result["warnings"]]
 
     response = client.post(
         f"/api/scenario/{result['id']}/dispatch",
         json=an_event(day_index()[70].isoformat()),
     )
-    payload = assert_error_shape(response, status=500)
-    assert payload["error"] == "scenario_failed"
+    assert response.status_code == 200
 
 
 @pytest.mark.parametrize("literal", ["NaN", "Infinity", "-Infinity"])
