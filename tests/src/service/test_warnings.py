@@ -314,17 +314,17 @@ def test_portfolio_coordination_reports_its_iterates(client):
     result = warm(client, FEASIBLE)
     reported = detail(result, "portfolio_coordination")
 
-    assert reported["iterations"] == 3
-    assert len(reported["peak_kw_by_iteration"]) == 3
-    assert reported["chosen_iteration"] in range(3)
+    assert reported["sweeps"] == 2
+    assert len(reported["peak_kw_by_sweep"]) == 2
+    assert reported["chosen_sweep"] in range(2)
 
 
 def test_portfolio_coordination_keeps_the_lowest_peak_iterate(client):
     result = warm(client, FEASIBLE)
     reported = detail(result, "portfolio_coordination")
-    peaks = reported["peak_kw_by_iteration"]
+    peaks = reported["peak_kw_by_sweep"]
 
-    assert min(peaks) == peaks[reported["chosen_iteration"]]
+    assert min(peaks) == peaks[reported["chosen_sweep"]]
 
 
 def test_sessions_that_exceed_the_day_grid_are_clamped_before_scheduling(
