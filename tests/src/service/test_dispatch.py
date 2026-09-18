@@ -224,11 +224,11 @@ def test_a_malformed_reduction_event_is_a_400(client, body, because):
 
 
 def test_dispatching_a_short_dwell_site_remains_a_valid_scenario(client):
-    """Grid-window clamping leaves a short-dwell site dispatchable."""
+    """Fractional grid overlap leaves a short-dwell site dispatchable."""
     body = {"date": DAY, "site_ids": ["BY-80339-bbbb0002"], "seed": 7}
     result = warm(client, body)
     assert result["scorecard"] is not None
-    assert "session_energy_clamped_to_grid" in [w["code"] for w in result["warnings"]]
+    assert "session_energy_clamped_to_grid" not in [w["code"] for w in result["warnings"]]
 
     response = client.post(
         f"/api/scenario/{result['id']}/dispatch",

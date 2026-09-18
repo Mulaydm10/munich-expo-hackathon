@@ -121,22 +121,19 @@ def test_a_missing_balancing_table_nulls_the_capacity_revenue(client_on, tmp_pat
 
 
 def test_short_dwell_sessions_are_clamped_before_scheduling(client):
-    """Short dwells are made representable on the scheduler's 15-minute grid."""
+    """Fractional overlap makes short dwells representable on the scheduler grid."""
     feasible = warm(client, FEASIBLE)
     degraded = warm(client, WITH_INFEASIBLE_SITE)
 
     assert "session_energy_clamped_to_grid" not in codes(feasible)
     assert feasible["scorecard"] is not None
 
-    assert "session_energy_clamped_to_grid" in codes(degraded)
-    reported = detail(degraded, "session_energy_clamped_to_grid")
-    assert reported["count"] >= 0
-    assert reported["clamped_kwh"] >= 0.0
-    assert reported["dropped_sessions"] >= 0
+    assert "session_energy_clamped_to_grid" not in codes(degraded)
+    assert degraded["scorecard"] is not None
 
 
-def test_the_optimised_curve_reports_grid_unrepresentable_energy(client):
-    """Grid-window clamping makes the unrepresentable partial remnant observable."""
+def test_the_optimised_curve_preserves_fractional_grid_energy(client):
+    """Fractional overlap avoids creating an artificial grid remnant."""
     degraded = warm(client, WITH_INFEASIBLE_SITE)
     rows = client.get(f"/api/scenario/{degraded['id']}/timeseries").json()["rows"]
     interval_h = 0.25  # the native 15-minute grid, asserted below
@@ -145,7 +142,7 @@ def test_the_optimised_curve_reports_grid_unrepresentable_energy(client):
     optimised_kwh = sum(r["load_kw_optimised"] for r in rows) * interval_h
     assert baseline_kwh > 0
     assert optimised_kwh <= baseline_kwh + 1e-9
-    assert "session_energy_clamped_to_grid" in codes(degraded)
+    assert "session_energy_clamped_to_grid" not in codes(degraded)
     assert "sessions_outside_day_grid" in codes(degraded)
 
 

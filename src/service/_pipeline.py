@@ -829,29 +829,30 @@ def _clamp_sessions_to_grid(
         dt_by_t = gaps.dt.total_seconds() / 3600.0
     else:
         dt_by_t = pd.Series(0.25, index=grid)
+    grid_start = grid.values
+    grid_end = (grid + pd.to_timedelta(dt_by_t, unit="h")).values
     sessions_for_schedule = sessions_day.copy()
     clamped_count = 0
     clamped_kwh = 0.0
     dropped_sessions = 0
     keep = []
     for row in sessions_for_schedule.itertuples():
-        deliverable = 0.0
-        for t in grid:
-            dt_h = float(dt_by_t.loc[t])
-            interval_end = t + pd.Timedelta(dt_h, unit="h")
-            overlap_h = max(
-                0.0,
-                (
-                    min(row.t_depart, interval_end) - max(row.t_arrive, t)
-                ).total_seconds() / 3600.0,
+        arrive = np.datetime64(pd.Timestamp(row.t_arrive).to_datetime64())
+        depart = np.datetime64(pd.Timestamp(row.t_depart).to_datetime64())
+        overlap_h = (
+            np.maximum(
+                np.minimum(depart, grid_end) - np.maximum(arrive, grid_start),
+                np.timedelta64(0, "ns"),
             )
-            deliverable += float(row.max_power_kw) * overlap_h
+            / np.timedelta64(1, "h")
+        )
+        deliverable = float(row.max_power_kw) * float(overlap_h.sum())
         if deliverable <= 0.0:
             dropped_sessions += 1
             keep.append(False)
         else:
             keep.append(True)
-        if row.energy_kwh > deliverable + 1e-8:
+            if row.energy_kwh > deliverable + 1e-8:
                 clamped_count += 1
                 clamped_kwh += float(row.energy_kwh - deliverable)
                 sessions_for_schedule.at[row.Index, "energy_kwh"] = deliverable
@@ -862,8 +863,8 @@ def _clamp_sessions_to_grid(
             "src/service",
             "sessions whose energy_kwh exceeds what max_power_kw can deliver over the "
             "grid intervals overlapping their dwell were clamped to that amount before "
-            "scheduling (the remainder is a partial-interval remnant the grid cannot "
-            "represent); sessions with no overlap with the day grid were left unscheduled",
+            "scheduling (the remainder falls outside the day grid); sessions with no "
+            "overlap with the day grid were left unscheduled",
             count=int(clamped_count),
             clamped_kwh=float(clamped_kwh),
             dropped_sessions=int(dropped_sessions),
