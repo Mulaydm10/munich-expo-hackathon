@@ -100,6 +100,12 @@ LANE = "src/sched"
 
 _TOL = 1e-6
 
+# Demand charge applied to a site's daily peak. German DSO Netzentgelte bill a
+# Leistungspreis on the annual peak (order 100-150 EUR/kW/a for >2500 h/a
+# customers); spread over 365 days. Source: ASSUMED (range from published DSO
+# price sheets), not a specific tariff.
+DEMAND_CHARGE_EUR_PER_KW_DAY = 0.30
+
 _SESSION_COLUMNS = [
     "session_id", "site_id", "t_arrive", "t_depart", "energy_kwh", "max_power_kw", "deadline_t",
 ]
@@ -306,8 +312,13 @@ class _SiteProblem:
 # ---------------------------------------------------------------------------
 
 
-def _solve_lp(problem: _SiteProblem, *, include_envelope: bool = True,
-              include_floor: bool = True) -> pd.DataFrame | None:
+def _solve_lp(
+    problem: _SiteProblem,
+    *,
+    include_envelope: bool = True,
+    include_floor: bool = True,
+    peak_price_eur_per_kw: float = 0.0,
+) -> pd.DataFrame | None:
     """Returns a dense (session, t) power dataframe for this site, or None if
     infeasible/unbounded/numerically failed. Deterministic: fixed variable order,
     method='highs'."""
@@ -330,12 +341,18 @@ def _solve_lp(problem: _SiteProblem, *, include_envelope: bool = True,
             return None
         return pd.DataFrame(columns=["t", "session_id", "power_kw"])
 
-    c = np.zeros(n)
+    use_peak_term = peak_price_eur_per_kw > 0.0
+    peak_index = n if use_peak_term else None
+    n_variables = n + int(use_peak_term)
+    c = np.zeros(n_variables)
     bounds = [(0.0, 0.0)] * n
     for (sid, t), i in var_index.items():
         dt = float(problem.dt.loc[t])
         c[i] = problem.price[t] * dt / 1000.0  # EUR per kW of this variable
         bounds[i] = (0.0, problem.max_power[sid])
+    if use_peak_term:
+        c[peak_index] = peak_price_eur_per_kw
+        bounds.append((0.0, None))
 
     # equality: total delivered energy == energy_kwh_due, per session.
     # (Tightened from the contract's ">=" to "==": an EV cannot usefully absorb more
@@ -343,7 +360,7 @@ def _solve_lp(problem: _SiteProblem, *, include_envelope: bool = True,
     # "overcharging" spuriously "profitable" in the LP with no physical meaning.
     # Documented design decision, not a contract violation -- see report.)
     session_order = sorted(problem.windows)
-    A_eq = np.zeros((len(session_order), n))
+    A_eq = np.zeros((len(session_order), n_variables))
     b_eq = np.zeros(len(session_order))
     for r, sid in enumerate(session_order):
         b_eq[r] = problem.energy_due[sid]
@@ -355,7 +372,7 @@ def _solve_lp(problem: _SiteProblem, *, include_envelope: bool = True,
 
     if include_envelope:
         for t in problem.times:
-            row = np.zeros(n)
+            row = np.zeros(n_variables)
             any_var = False
             for sid in problem.windows:
                 key = (sid, t)
@@ -366,12 +383,26 @@ def _solve_lp(problem: _SiteProblem, *, include_envelope: bool = True,
                 A_ub_rows.append(row)
                 b_ub.append(problem.max_kw[t])
 
+    if use_peak_term:
+        for t in problem.times:
+            row = np.zeros(n_variables)
+            any_var = False
+            for sid in problem.windows:
+                key = (sid, t)
+                if key in var_index:
+                    row[var_index[key]] = 1.0
+                    any_var = True
+            if any_var:
+                row[peak_index] = -1.0
+                A_ub_rows.append(row)
+                b_ub.append(0.0)
+
     if include_floor:
         for t in problem.times:
             req = problem.floor_at(t)
             if req <= 0:
                 continue
-            row = np.zeros(n)
+            row = np.zeros(n_variables)
             for sid in problem.windows:
                 key = (sid, t)
                 if key in var_index:
@@ -403,14 +434,16 @@ def _solve_lp(problem: _SiteProblem, *, include_envelope: bool = True,
     return pd.DataFrame(records, columns=["t", "session_id", "power_kw"])
 
 
-def _solve_site_lp(problem: _SiteProblem) -> pd.DataFrame:
+def _solve_site_lp(problem: _SiteProblem, *, peak_price_eur_per_kw: float = 0.0) -> pd.DataFrame:
     problem.check_deadline_feasibility()  # names "deadline" first, per priority order
-    full = _solve_lp(problem)
+    full = _solve_lp(problem, peak_price_eur_per_kw=peak_price_eur_per_kw)
     if full is not None:
         return full
     # diagnose: physics (envelope) ranks above the sold floor, so check whether
     # dropping the floor alone would fix it -- if so, the floor is what's binding.
-    without_floor = _solve_lp(problem, include_floor=False)
+    without_floor = _solve_lp(
+        problem, include_floor=False, peak_price_eur_per_kw=peak_price_eur_per_kw
+    )
     if without_floor is not None:
         raise Infeasible(
             f"src.sched: floor infeasible at site {problem.site_id!r}: dropping the "
@@ -430,7 +463,9 @@ def _solve_site_lp(problem: _SiteProblem) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 
-def _solve_site_greedy(problem: _SiteProblem) -> pd.DataFrame:
+def _solve_site_greedy(
+    problem: _SiteProblem, *, peak_price_eur_per_kw: float = 0.0
+) -> pd.DataFrame:
     """Three ordered full-horizon passes over `problem.times`, in the contract's own
     priority order (deadlines first... but the floor has to claim its energy BEFORE
     anything optional does, or a later floor window can find every session already
@@ -448,6 +483,7 @@ def _solve_site_greedy(problem: _SiteProblem) -> pd.DataFrame:
     still can never be sacrificed for the floor -- phase 2 below still raises
     Infeasible naming envelope/deadline before phase 3 ever runs), only the order in
     which capacity is *reserved* so a real feasible answer isn't missed.
+    Greedy is price/deadline only; the demand-charge peak term is an LP-only objective.
     """
     problem.check_deadline_feasibility()
 
@@ -592,6 +628,7 @@ def _solve_all_sites(
     prices: pd.DataFrame,
     commitments: Sequence[Commitment],
     solver: Literal["lp", "greedy"],
+    peak_price_eur_per_kw: float = 0.0,
 ) -> pd.DataFrame:
     # issue #27 finding 7: `Literal["lp", "greedy"]` is a type-checker hint, not a
     # runtime check -- an unrecognised string (a capitalisation typo, say) must not
@@ -609,7 +646,7 @@ def _solve_all_sites(
         if site_envelope.empty:
             raise ValueError(f"src.sched: no envelope rows for site_id={site_id!r}")
         problem = _SiteProblem(site_id, site_sessions, site_envelope, prices, commitments)
-        site_df = solve_fn(problem)
+        site_df = solve_fn(problem, peak_price_eur_per_kw=peak_price_eur_per_kw)
         site_df.insert(1, "site_id", site_id)
         frames.append(site_df)
     out = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=_SCHEDULE_COLUMNS)
@@ -628,6 +665,7 @@ def schedule(
     *,
     commitments: Sequence[Commitment] = (),
     solver: Literal["lp", "greedy"] = "lp",
+    peak_price_eur_per_kw: float = 0.0,
 ) -> pd.DataFrame:
     """t, site_id, session_id, power_kw. LP (or greedy) over 15-min intervals, decomposed
     per site (see contracts/src/sched.md). Dense per session: one row for every interval
@@ -645,6 +683,11 @@ def schedule(
     _reject_nan(envelope, ["max_kw"], "envelope")
     _reject_nan(prices, ["price_eur_mwh"], "prices")
     _reject_nan_commitments(commitments)
+    if not np.isfinite(peak_price_eur_per_kw) or peak_price_eur_per_kw < 0:
+        raise ValueError(
+            f"{LANE}: peak_price_eur_per_kw must be finite and >= 0, "
+            f"got {peak_price_eur_per_kw!r}"
+        )
     if solver not in ("lp", "greedy"):
         raise ValueError(
             f"src.sched: unknown solver {solver!r}; expected 'lp' or 'greedy'"
@@ -652,15 +695,24 @@ def schedule(
     if sessions.empty:
         out = pd.DataFrame(columns=_SCHEDULE_COLUMNS)
         out.attrs.update(sessions=sessions, envelope=envelope, prices=prices,
-                         commitments=tuple(commitments), solver=solver)
+                         commitments=tuple(commitments), solver=solver,
+                         peak_price_eur_per_kw=float(peak_price_eur_per_kw))
         return out
 
-    out = _solve_all_sites(sessions, envelope, prices, commitments, solver)
+    out = _solve_all_sites(
+        sessions,
+        envelope,
+        prices,
+        commitments,
+        solver,
+        peak_price_eur_per_kw=peak_price_eur_per_kw,
+    )
     out.attrs["sessions"] = sessions
     out.attrs["envelope"] = envelope
     out.attrs["prices"] = prices
     out.attrs["commitments"] = tuple(commitments)
     out.attrs["solver"] = solver
+    out.attrs["peak_price_eur_per_kw"] = float(peak_price_eur_per_kw)
     return out
 
 
@@ -973,6 +1025,7 @@ def dispatch(schedule: pd.DataFrame, event: ReductionEvent) -> pd.DataFrame:
     prices = schedule.attrs.get("prices")
     commitments = schedule.attrs.get("commitments", ())
     solver = schedule.attrs.get("solver", "lp")
+    peak_price_eur_per_kw = schedule.attrs.get("peak_price_eur_per_kw", 0.0)
     if sessions is None or envelope is None or prices is None:
         raise ValueError(
             "src.sched.dispatch: `schedule` must be a DataFrame returned by "
@@ -1067,12 +1120,26 @@ def dispatch(schedule: pd.DataFrame, event: ReductionEvent) -> pd.DataFrame:
     def try_alpha(alpha: float):
         env_a = envelope_at_alpha(alpha)
         try:
-            return _solve_all_sites(future_sessions, env_a, prices, released_commitments, solver)
+            return _solve_all_sites(
+                future_sessions,
+                env_a,
+                prices,
+                released_commitments,
+                solver,
+                peak_price_eur_per_kw=peak_price_eur_per_kw,
+            )
         except Infeasible:
             return None
 
     if event.reduction_kw <= 0:
-        future_best = _solve_all_sites(future_sessions, future_envelope, prices, commitments, solver)
+        future_best = _solve_all_sites(
+            future_sessions,
+            future_envelope,
+            prices,
+            commitments,
+            solver,
+            peak_price_eur_per_kw=peak_price_eur_per_kw,
+        )
         best_alpha = 0.0
     else:
         future_best = try_alpha(1.0)
@@ -1080,7 +1147,14 @@ def dispatch(schedule: pd.DataFrame, event: ReductionEvent) -> pd.DataFrame:
             best_alpha = 1.0
         else:
             lo, hi = 0.0, 1.0
-            future_best = _solve_all_sites(future_sessions, future_envelope, prices, commitments, solver)
+            future_best = _solve_all_sites(
+                future_sessions,
+                future_envelope,
+                prices,
+                commitments,
+                solver,
+                peak_price_eur_per_kw=peak_price_eur_per_kw,
+            )
             best_alpha = 0.0
             for _ in range(16):  # ~1.5e-5 resolution on alpha
                 mid = (lo + hi) / 2.0
@@ -1108,6 +1182,7 @@ def dispatch(schedule: pd.DataFrame, event: ReductionEvent) -> pd.DataFrame:
     best_df.attrs["prices"] = prices
     best_df.attrs["commitments"] = commitments
     best_df.attrs["solver"] = solver
+    best_df.attrs["peak_price_eur_per_kw"] = float(peak_price_eur_per_kw)
     best_df.attrs["reduction_kw_requested"] = float(event.reduction_kw)
     best_df.attrs["reduction_kw_achieved"] = float(achieved)
     best_df.attrs["reduction_shortfall_kw"] = float(shortfall)

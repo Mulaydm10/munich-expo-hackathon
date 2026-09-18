@@ -188,6 +188,90 @@ def test_price_response_beats_asap_baseline():
     assert optimised["deadline_misses"] == 0
 
 
+def test_peak_term_flattens_load_and_beats_asap_peak():
+    times = grid("2026-01-10T00:00", 8)
+    prices = mk_prices(times[:-1], [20.0] * 4 + [200.0] * 4)
+    envelope = mk_envelope("S1", times[:-1], 100.0)
+    sessions = mk_sessions([
+        dict(session_id=f"V{i}", site_id="S1", t_arrive=times[0], t_depart=times[8],
+             energy_kwh=5.0, max_power_kw=10.0)
+        for i in range(4)
+    ])
+
+    asap = api.baseline(sessions, policy="asap")
+    asap_audit = api.evaluate(asap, sessions, envelope, prices, ())
+    assert asap_audit["peak_kw"] == pytest.approx(40.0, abs=1e-6)
+
+    energy_only = api.schedule(sessions, envelope, prices, peak_price_eur_per_kw=0.0)
+    energy_only_audit = api.evaluate(energy_only, sessions, envelope, prices, ())
+    assert energy_only_audit["peak_kw"] == pytest.approx(40.0, abs=1e-6)
+
+    peak_aware = api.schedule(
+        sessions,
+        envelope,
+        prices,
+        peak_price_eur_per_kw=api.DEMAND_CHARGE_EUR_PER_KW_DAY,
+    )
+    peak_audit = api.evaluate(peak_aware, sessions, envelope, prices, ())
+    assert peak_audit["peak_kw"] <= 10.0 + 1e-6
+    assert peak_audit["peak_kw"] < asap_audit["peak_kw"]
+    assert peak_audit["unmet_kwh"] == pytest.approx(0.0, abs=1e-6)
+    assert peak_audit["deadline_misses"] == 0
+    assert peak_audit["envelope_violation_kwh"] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_peak_price_zero_is_bit_identical():
+    times = grid("2026-01-10T00:00", 8)
+    prices = mk_prices(times[:-1], [20.0] * 4 + [200.0] * 4)
+    envelope = mk_envelope("S1", times[:-1], 100.0)
+    sessions = mk_sessions([
+        dict(session_id=f"V{i}", site_id="S1", t_arrive=times[0], t_depart=times[8],
+             energy_kwh=5.0, max_power_kw=10.0)
+        for i in range(4)
+    ])
+
+    default = api.schedule(sessions, envelope, prices)
+    explicit_zero = api.schedule(sessions, envelope, prices, peak_price_eur_per_kw=0.0)
+
+    pd.testing.assert_frame_equal(default, explicit_zero)
+
+
+def test_peak_price_rejects_negative_and_nan():
+    times = grid("2026-01-10T00:00", 8)
+    prices = mk_prices(times[:-1], 50.0)
+    envelope = mk_envelope("S1", times[:-1], 100.0)
+    sessions = mk_sessions([
+        dict(session_id="V", site_id="S1", t_arrive=times[0], t_depart=times[8],
+             energy_kwh=1.0, max_power_kw=10.0),
+    ])
+
+    with pytest.raises(ValueError, match="src/sched.*peak_price_eur_per_kw"):
+        api.schedule(sessions, envelope, prices, peak_price_eur_per_kw=-1.0)
+    with pytest.raises(ValueError, match="src/sched.*peak_price_eur_per_kw"):
+        api.schedule(sessions, envelope, prices, peak_price_eur_per_kw=float("nan"))
+
+
+def test_dispatch_preserves_peak_price():
+    times = grid("2026-01-10T00:00", 8)
+    prices = mk_prices(times[:-1], [20.0] * 4 + [200.0] * 4)
+    envelope = mk_envelope("S1", times[:-1], 100.0)
+    sessions = mk_sessions([
+        dict(session_id=f"V{i}", site_id="S1", t_arrive=times[0], t_depart=times[8],
+             energy_kwh=5.0, max_power_kw=10.0)
+        for i in range(4)
+    ])
+    peak_price = api.DEMAND_CHARGE_EUR_PER_KW_DAY
+    sched = api.schedule(sessions, envelope, prices, peak_price_eur_per_kw=peak_price)
+
+    event = api.ReductionEvent(call_t=times[2], notice_min=0.0, duration_min=30.0,
+                               reduction_kw=5.0)
+    amended = api.dispatch(sched, event)
+
+    assert amended.attrs["peak_price_eur_per_kw"] == pytest.approx(peak_price)
+    audit = api.evaluate(amended, sessions, envelope, prices, ())
+    assert audit["deadline_misses"] == 0
+
+
 # ---------------------------------------------------------------------------
 # 4. The floor is real: schedule() holds it; a naive (commitment-blind) schedule
 #    on the same input violates it. The contrast is the point.
