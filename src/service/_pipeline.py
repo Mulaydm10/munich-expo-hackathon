@@ -615,15 +615,15 @@ def _build_envelope(sites, spec, weather, base_load, day_index, day_start, warns
         )
 
     prior_window_start = day_start - pd.Timedelta(days=1)
+    prior_window = base_load[
+        (base_load["t"] >= prior_window_start) & (base_load["t"] < day_start)
+    ]
+    prior_by_site = dict(tuple(prior_window.groupby("site_id", sort=False)))
     frames, clipped_num, clipped_den, n_no_prior = [], 0.0, 0, 0
     for site_id, site in electrical.items():
-        prior = base_load[
-            (base_load["site_id"] == site_id)
-            & (base_load["t"] >= prior_window_start)
-            & (base_load["t"] < day_start)
-        ]
+        prior = prior_by_site.get(site_id)
         prior_series = None
-        if len(prior) and not prior["load_kw"].isna().any():
+        if prior is not None and len(prior) and not prior["load_kw"].isna().any():
             prior_series = pd.Series(
                 prior["load_kw"].to_numpy(dtype=float), index=pd.DatetimeIndex(prior["t"])
             ).sort_index()
