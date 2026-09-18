@@ -244,12 +244,45 @@ def _decode_raw(raw: bytes) -> str:
         return raw.decode("cp1252")
 
 
+# A number as a German-locale export actually writes one: `.` groups thousands, `,` is
+# the decimal mark. Either the digits carry thousands groups of exactly three (`11.349`,
+# `1.234.567`) or they carry none at all (`22`, `48`); a decimal part is `,` plus digits.
+# Anything else -- notably a bare `.` that is NOT a thousands group, e.g. `41.2` -- is
+# ambiguous between the two locales and is refused rather than guessed at.
+_GERMAN_NUMBER_RE = re.compile(r"^[+-]?(?:\d{1,3}(?:\.\d{3})+|\d+)(?:,\d+)?$")
+
+
 def _decimal_comma_to_float(series: pd.Series) -> pd.Series:
-    """German decimal-comma numeric strings -> float. Shared by every source
-    in this module that carries German-locale numbers (charge_points, and
-    the SMARD-derived grid_load/prices/carbon sources); DWD's raw numbers use
-    a plain decimal point (see `_parse_dwd_weather_raw`)."""
-    return pd.to_numeric(series.str.strip().str.replace(",", ".", regex=False), errors="raise")
+    """German-locale numeric strings -> float. Shared by every source in this
+    module that carries German-locale numbers (charge_points, and the
+    SMARD-derived grid_load/prices/carbon sources); DWD's raw numbers use a
+    plain decimal point (see `_parse_dwd_weather_raw`).
+
+    Issue #50 item 2: this used to convert the decimal comma and leave the
+    THOUSANDS separator in place, so a real export's `11.349,25` became the
+    unparseable `11.349.25`. Every figure in the fixtures happens to be small
+    enough to have no thousands group, which is why the synthetic shape passed
+    and the first real SMARD download would not have.
+
+    Both separators are handled now, and the string is validated FIRST. Silently
+    stripping every `.` would turn a plain-decimal-point `41.2` into `412` -- a
+    1000x error in a load or price series, arriving with no signal at all. A
+    value that is not unambiguously German-locale therefore raises, which is the
+    same refusal `errors="raise"` already gave for non-numeric text.
+    """
+    cleaned = series.astype(str).str.strip()
+    malformed = cleaned[~cleaned.str.match(_GERMAN_NUMBER_RE)]
+    if not malformed.empty:
+        sample = ", ".join(repr(v) for v in malformed.unique()[:5])
+        raise ValueError(
+            f"{len(malformed)} value(s) are not German-locale numbers ('.' groups "
+            f"thousands, ',' is the decimal mark): {sample}. Refusing to guess -- "
+            "stripping a '.' that is a decimal point would be a 1000x error."
+        )
+    return pd.to_numeric(
+        cleaned.str.replace(".", "", regex=False).str.replace(",", ".", regex=False),
+        errors="raise",
+    )
 
 
 def _raw_files(root: Path, source: str) -> list[Path]:

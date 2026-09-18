@@ -648,3 +648,32 @@ def test_carbon_same_fuel_at_two_resolutions_is_refused_not_double_counted(
 
     with pytest.raises(ValueError, match="same fuel at more than one resolution"):
         api.canonicalise("generation_mix", root=root)
+
+
+def test_thousands_separated_numbers_parse_and_ambiguous_ones_refuse() -> None:
+    """#50 item 2. `_decimal_comma_to_float` converted the decimal comma but left the
+    German THOUSANDS separator in place, so a real export's `11.349,25` became the
+    unparseable `11.349.25`. Every fixture number is small enough to have no thousands
+    group, which is exactly why the synthetic shape passed and real SMARD data would not.
+
+    The refusal half matters as much as the fix: stripping every `.` unconditionally
+    would turn a plain-decimal-point `41.2` into `412`, a 1000x error in a load or price
+    series arriving with no signal at all. Ambiguous input raises instead.
+    """
+    import pandas as pd
+    import pytest as _pytest
+
+    from src.data import api as data_api
+
+    parsed = data_api._decimal_comma_to_float(
+        pd.Series(["11.349,25", "1.234.567,5", "22", "48,442398", "-2.500,75"])
+    )
+    assert list(parsed) == [11349.25, 1234567.5, 22.0, 48.442398, -2500.75]
+
+    # A bare '.' that is not a thousands group is ambiguous between locales.
+    with _pytest.raises(ValueError, match="not German-locale numbers"):
+        data_api._decimal_comma_to_float(pd.Series(["41.2"]))
+
+    # A malformed group width is not silently accepted either.
+    with _pytest.raises(ValueError, match="not German-locale numbers"):
+        data_api._decimal_comma_to_float(pd.Series(["1.2345,6"]))
