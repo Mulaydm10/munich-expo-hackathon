@@ -169,3 +169,24 @@ Everything below is on `bot/join-real-lane-split` for the human to merge — des
   the standing canary, is not). Removal was blocked by a local sandbox rule on irreversible
   deletion, so they are still on disk. `xlane`'s 22 uncommitted files were checked first and are
   *older* than `main` (58 insertions against 4,010 deletions) — nothing unique is stranded there.
+
+## 2026-09-18 (later) — mac worker (cleanup)
+
+- **#65 merged.** `docs/HANDOFF.md` is on `main` (`477ce82`). Its section 3 states *619 passed, 1
+  xfailed* as verified at `f0f13fb`; `main` is now 642 passed after #61/#62/#64, so that one figure
+  is already stale. Percentages and the lane table are unaffected.
+- **Thirteen stale worktrees removed**, `claim-1` kept (it backs the standing canary PR #4).
+  Caches cleared. Merged local branches deleted; `claim/1` and `fix/43-...` are all that remain
+  besides `main`.
+- **A near-miss worth recording: I was about to delete the `merged/<n>-<sha8>` refs on origin as
+  clutter.** They are not clutter — `AGENTS.md` renames claim refs and *never* deletes them, and
+  `merged/*` is the released form the bus reconstructs state from. Deleting them would have
+  destroyed the release record for every claim this repo has ever closed. The general lesson: in
+  this repo a ref is data, and "tidying" a namespace you have not read the protocol for is a
+  destructive edit wearing a housekeeping disguise.
+- **Two claims were still held on merged PRs** — `claim/11` and `claim/48`, merged earlier today and
+  never released. That is precisely the failure `docs/HANDOFF.md:232` records ("15 refs were once
+  left held on merged PRs, which made unfinished work look claimed and blocked it"). Released by
+  rename to `merged/11-dd690097` and `merged/48-6d8d6dde`. Live `claim/*` refs are now exactly
+  `claim/1` (canary) and `claim/state` (the lock), which is the correct steady state.
+- Suite after all of it: **642 passed, 1 xfailed**.

@@ -115,10 +115,15 @@ Then, in order:
    fixing), **#31** voice, then p2s #35 / ~~#11~~ (merged as #62) / #29.
 
 ## Working notes for whoever picks this up
-- **Claim worktrees live under `~/Dhruv/worktrees/munich-expo-hackathon/`** (#64). Thirteen stale
-  ones from the 05–07 Sep build are still on disk and are all merged into `main`; only `claim-1`
-  (the standing canary) must be kept. Removing them was blocked by a local sandbox rule this
-  session — see `worklog.md`.
+- **Claim worktrees live under `~/Dhruv/worktrees/munich-expo-hackathon/`** (#64). The thirteen
+  stale ones from the 05–07 Sep build were removed on 2026-09-18; only `claim-1` (the standing
+  canary) remains, which is correct. Merged local branches were deleted too — `claim/1` and
+  `fix/43-...` (PR #66) are the only non-`main` locals left.
+- **`merged/<n>-<sha8>` refs on origin are protocol state, not clutter — do not delete them.**
+  `AGENTS.md` renames claim refs, never deletes them, and `merged/*` is the released form. The two
+  refs still held on merged PRs (`claim/11`, `claim/48`) were released properly this session as
+  `merged/11-dd690097` and `merged/48-6d8d6dde`. Only `claim/1` (canary) and `claim/state` (the
+  state lock) remain as live `claim/*` refs, which is the correct steady state.
 - **Python is `/Users/mulaydm10/Dhruv/.venv-munich/bin/python` (3.12).** System `python3` is 3.14
   and pyarrow has no wheel for it.
 - **Wait for the review bot before merging.** It posts a few minutes after a PR opens and has
