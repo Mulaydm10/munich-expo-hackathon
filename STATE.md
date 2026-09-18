@@ -6,12 +6,15 @@ disagree about what is true *now*, **STATE wins** — the worklog only explains 
 Note for bus workers: this is the *project* snapshot. The bus's lane/claim state lives in
 `docs/STATE.md` and is written only under the `claim/state` lock. Two different files, on purpose.
 
-Last updated: 2026-09-06 evening (mac worker; design offline since 2026-09-05T20:44Z)
+Last updated: 2026-09-18 midday (mac worker; design node returned 2026-09-18 to file the handoff
+brief #65, otherwise silent since 2026-09-05T20:44Z)
 
 ## Deadline + time remaining
-**Sun 20 Sep 2026, 17:00 Europe/Berlin (CEST)** — working assumption. A second official source
-implies end of day on the 20th; the conflict is unresolved (`Q-0003`) and we plan against the
-earlier one. See `COMPETITION.md`; do not restate the date anywhere else.
+**Sun 20 Sep 2026, 17:00 Europe/Berlin (CEST)** — **two days out.** PR #65 reports Devpost's
+dates page now states this explicitly, which would resolve `Q-0003` in favour of the reading we
+already planned against. That PR is **not merged** (red CI, see In flight), so `COMPETITION.md`
+still carries the contradiction; treat the 17:00 reading as confirmed-but-unlanded. Do not restate
+the date anywhere else.
 
 ## Done
 - Kickoff resolved the two blockers: `VISION.md` (thesis: FlexGrid) and `COMPETITION.md` (event
@@ -27,8 +30,17 @@ earlier one. See `COMPETITION.md`; do not restate the date anywhere else.
   lane issues are claimable and the pinned Board is #16.
 
 ## In flight
-- **Nothing is in flight.** No open PRs, no running agents, no unmerged branches. `main` is
-  `981d6f5` and `pytest tests -q` is **614 passed, 1 xfailed** (verified 2026-09-06 evening).
+`main` is `901d58e`; `pytest tests -q` is **643 passed, 1 xfailed** (verified 2026-09-18 midday,
+after the merges below).
+
+- **PR #66** (`fix/43-ui-hit-test-and-adjust-form`) — #43 finding 2, the canvas hit-test scaled by
+  the border box. Lane-confined to `src/ui`, suite green. **Awaiting a qualifying human reviewer.**
+- **PR #65** (`design/handoff-2026-09-18`) — `docs/HANDOFF.md`, a cold-start takeover brief from the
+  design node. Docs-only, but `lane` and `resolve` both **FAIL in ~2s**, which looks like a protocol
+  check (a design PR with no claim ref) rather than a test failure. Not diagnosed yet. This is the
+  most valuable unmerged thing in the repo — it is the only document that records the *negatives*.
+- **PR #4** (`claim/1`) — the standing canary. **Never merge it**; the protocol depends on it
+  staying open.
 
 ## What is true now
 - **All nine lanes are merged and the app runs.** `src/service` owns the FastAPI app; before
@@ -41,6 +53,13 @@ earlier one. See `COMPETITION.md`; do not restate the date anywhere else.
   structurally could not see between lanes: `src/service` and `src/market` were each green and
   jointly broken, and merging #33 took 58 of 105 service tests to a 500 with no CI run ever
   being wrong.
+- **2026-09-18 session:** the three green open PRs were merged to `main` — #61 (`claim/48`, seven
+  `src/service` follow-ups), #62 (`claim/11`, forecast rolling-origin) and #64
+  (`design/worktree-layout`). Each merged pinned to its reviewed head sha. Suite went 619 -> 642.
+- **Dependencies refreshed inside the declared ranges** (numpy 2.5.3, scikit-learn 1.9.1,
+  uvicorn 0.53.0); suite unchanged at 642. `requirements-dev.txt` itself was **not** edited — it is
+  canary-gated. pytest 9, pandas 3 and pyarrow 25 are all **outside** its ranges and would each need
+  a design PR plus pre- and post-merge canaries; none was attempted two days out.
 - **`ReductionEvent` is finally specified** in `contracts/src/sched.md` (#52). It had been a
   documented GUESS that three lanes were built on.
 
@@ -82,15 +101,24 @@ carry a resolution qualifier after the unit), so the first real file would parse
 silently.
 
 Then, in order:
-1. **#43** (p0, `src/ui`) — the operator-adjust form is dead in production: `reduction_event_input`
-   is read at `src/ui/api.py:651` and produced nowhere in `src/`. The integration tier's strict
-   `xfail` points straight at it. One of its fixes is cross-lane and needs a `src/service` route.
+1. **#43** (p0, `src/ui`) — **partly closed.** Finding 2 (border-box hit-testing) is fixed in
+   PR #66. Finding 1 remains and is the `xfail`: `reduction_event_input` is read at
+   `src/ui/api.py:651` and produced nowhere in `src/`. Note what closing it actually costs —
+   `tests/integration/test_no_dead_context_keys.py`'s docstring records that **`src/service` never
+   calls `src.ui.render()` from any HTTP route at all**, so there is no HTML-serving glue to hang
+   the route on. Finding 1 is therefore not a bug fix but the missing service -> ui layer, and #65's
+   handoff brief puts UI/demo/voice out of scope for the backend stretch. Findings 3 (capacity
+   promised across gappy intervals) and 4 (non-UTC offsets) are untouched and are ordinary fixes.
 2. **`DEMO-0001`** — still no scenario. No longer blocked; write it **and actually run it**, and
    state plainly which figures are synthetic.
-3. **#48** service follow-ups, **#44** market input-validation (filed unverified — verify before
-   fixing), **#31** voice, then p2s #35 / #11 / #29.
+3. ~~**#48** service follow-ups~~ (merged as #61), **#44** market input-validation (filed unverified — verify before
+   fixing), **#31** voice, then p2s #35 / ~~#11~~ (merged as #62) / #29.
 
 ## Working notes for whoever picks this up
+- **Claim worktrees live under `~/Dhruv/worktrees/munich-expo-hackathon/`** (#64). Thirteen stale
+  ones from the 05–07 Sep build are still on disk and are all merged into `main`; only `claim-1`
+  (the standing canary) must be kept. Removing them was blocked by a local sandbox rule this
+  session — see `worklog.md`.
 - **Python is `/Users/mulaydm10/Dhruv/.venv-munich/bin/python` (3.12).** System `python3` is 3.14
   and pyarrow has no wheel for it.
 - **Wait for the review bot before merging.** It posts a few minutes after a PR opens and has
