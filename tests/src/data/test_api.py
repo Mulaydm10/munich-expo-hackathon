@@ -14,7 +14,7 @@ import csv
 import io
 import random
 import shutil
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 import pandas as pd
@@ -272,6 +272,14 @@ def test_real_sources_are_fetch_wired() -> None:
         "generation_mix",
         "dwd_weather",
     }
+
+
+def test_smard_exclusive_end_timestamp_is_next_local_midnight() -> None:
+    assert api._smard_timestamp_ms(
+        date(2026, 8, 31), exclusive_end=True
+    ) == api._smard_timestamp_ms(
+        date(2026, 9, 1)
+    )
 
 
 def test_canonicalise_raises_not_implemented_for_unwired_source_name(tmp_path: Path) -> None:

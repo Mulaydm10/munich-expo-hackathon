@@ -201,10 +201,10 @@ def _month_chunks(start: date, end: date) -> list[tuple[date, date]]:
     return chunks
 
 
-def _smard_timestamp_ms(value: date, *, last_interval: bool = False) -> int:
+def _smard_timestamp_ms(value: date, *, exclusive_end: bool = False) -> int:
     timestamp = pd.Timestamp(value)
-    if last_interval:
-        timestamp = timestamp + pd.Timedelta(days=1) - pd.Timedelta(minutes=15)
+    if exclusive_end:
+        timestamp += timedelta(days=1)
     return int(timestamp.tz_localize(_BERLIN).timestamp() * 1000)
 
 
@@ -234,7 +234,7 @@ def _fetch_smard_chunk(
                 "moduleIds": module_ids,
                 "region": region,
                 "timestamp_from": _smard_timestamp_ms(chunk_start),
-                "timestamp_to": _smard_timestamp_ms(chunk_end, last_interval=True),
+                "timestamp_to": _smard_timestamp_ms(chunk_end, exclusive_end=True),
                 "type": "discrete",
                 "language": "de",
                 "resolution": "quarterhour",
