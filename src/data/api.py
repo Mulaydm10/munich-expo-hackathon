@@ -1033,7 +1033,11 @@ def _dwd_solar_to_utc(df: pd.DataFrame) -> pd.DataFrame:
             "ghi_w_m2": value * 10000 / 3600,
         }
     ).sort_values("source_time")
-    return result.drop_duplicates(["station_id", "t"], keep="last").drop(columns="source_time")
+    deduplicated = result.drop_duplicates(["station_id", "t"], keep="last").drop(
+        columns="source_time"
+    )
+    deduplicated.attrs["n_solar_rows_collapsed_same_hour"] = len(result) - len(deduplicated)
+    return deduplicated
 
 
 def _read_dwd_product(raw: bytes) -> pd.DataFrame:
@@ -1294,9 +1298,13 @@ def _canonicalise_dwd_weather(*, root: Path) -> Path:
         "wind_ms": [],
         "ghi_w_m2": [],
     }
+    n_solar_rows_collapsed_same_hour = 0
     for frame in parsed:
         for variable in variable_frames:
             if variable in frame:
+                n_solar_rows_collapsed_same_hour += int(
+                    frame.attrs.get("n_solar_rows_collapsed_same_hour", 0)
+                )
                 variable_frames[variable].append(frame[["station_id", "t", variable]])
     window_frames = variable_frames["temp_c"] or variable_frames["wind_ms"]
     temperature_window_start = (
@@ -1369,6 +1377,7 @@ def _canonicalise_dwd_weather(*, root: Path) -> Path:
                 )
             ),
             "n_rows_before_temperature_window_dropped": n_rows_before_temperature_window_dropped,
+            "n_solar_rows_collapsed_same_hour": n_solar_rows_collapsed_same_hour,
             **missing_counts,
         },
     )

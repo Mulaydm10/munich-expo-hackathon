@@ -756,6 +756,7 @@ def test_real_smard_unreported_fuel_and_dwd_products(tmp_path: Path) -> None:
     assert weather.loc[weather["station_id"] == "03379", "ghi_w_m2"].isna().all()
     assert "03379" in api.meta("weather", root=weather_root)["stations_without_solar"]
     assert weather["t"].min() == pd.Timestamp("2025-03-17T00:00:00Z")
+    assert api.meta("weather", root=weather_root)["n_solar_rows_collapsed_same_hour"] == 0
 
     solar = api._parse_dwd_weather_raw((FIXTURES / "dwd_real_st_2026.txt").read_bytes())
     row = solar[solar["t"] == pd.Timestamp("2026-08-31T20:00:00Z")].iloc[0]
@@ -763,3 +764,13 @@ def test_real_smard_unreported_fuel_and_dwd_products(tmp_path: Path) -> None:
     assert row["ghi_w_m2"] == pytest.approx(0.0 * 10000 / 3600)
     daylight = solar[solar["t"] == pd.Timestamp("2026-08-31T06:00:00Z")].iloc[0]
     assert daylight["ghi_w_m2"] == pytest.approx(62.0 * 10000 / 3600)
+    collapsed = api._dwd_solar_to_utc(
+        pd.DataFrame(
+            {
+                "STATIONS_ID": ["1048", "1048"],
+                "MESS_DATUM": ["2026083122:00", "2026083122:59"],
+                "FG_LBERG": ["1.0", "2.0"],
+            }
+        )
+    )
+    assert collapsed.attrs["n_solar_rows_collapsed_same_hour"] == 1
