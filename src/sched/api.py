@@ -820,8 +820,9 @@ def evaluate(
     sched["dt_h"] = dt_vals
     sched["row_energy_kwh"] = sched["power_kw"] * sched["dt_h"]
 
-    # issue #27 finding 1: only energy delivered at the right site, within the
-    # session's own [t_arrive, deadline_t) window, counts toward meeting its deadline.
+    # issue #27 finding 1: only energy delivered at the right site, within an
+    # overlapping grid interval in the session's own [t_arrive, deadline_t) window,
+    # counts toward meeting its deadline.
     # `delivered = sched.groupby("session_id")[...]` used to join on session_id alone,
     # so a hand-built schedule crediting a session's energy at the wrong site, before
     # it arrived, or after its deadline read as a met deadline. Invalid rows are
@@ -835,11 +836,14 @@ def evaluate(
     row_site = sched["session_id"].map(sess_site)
     row_arrive = sched["session_id"].map(sess_arrive)
     row_deadline = sched["session_id"].map(sess_deadline)
+    interval_end = sched["t"] + pd.to_timedelta(sched["dt_h"], unit="h")
+    overlap_end = interval_end.where(interval_end <= row_deadline, row_deadline)
+    overlap_start = sched["t"].where(sched["t"] >= row_arrive, row_arrive)
+    overlap_h = (overlap_end - overlap_start).dt.total_seconds() / 3600.0
     valid_row = (
         sched["session_id"].isin(sess.index)
         & (sched["site_id"] == row_site)
-        & (sched["t"] >= row_arrive)
-        & (sched["t"] < row_deadline)
+        & (overlap_h > 0.0)
     )
     sched["valid_row_energy_kwh"] = np.where(valid_row, sched["row_energy_kwh"], 0.0)
 
