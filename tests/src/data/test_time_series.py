@@ -740,7 +740,13 @@ def test_real_smard_unreported_fuel_and_dwd_products(tmp_path: Path) -> None:
     assert api.meta("carbon", root=carbon_root)["fuels_unreported_entire_file"] == ["Kernenergie"]
 
     weather_root = _root(tmp_path, "real_weather")
-    _seed(weather_root, "dwd_weather", "dwd_real_tu.zip", "dwd_real_ff.zip")
+    _seed(
+        weather_root,
+        "dwd_weather",
+        "dwd_real_tu.zip",
+        "dwd_real_ff.zip",
+        "dwd_real_st_2026.txt",
+    )
     api.canonicalise("dwd_weather", root=weather_root)
     weather = api.load("weather", root=weather_root)
     first = weather[(weather["station_id"] == "03379") & (weather["t"] == pd.Timestamp("2025-03-17T00:00:00Z"))].iloc[0]
@@ -749,7 +755,11 @@ def test_real_smard_unreported_fuel_and_dwd_products(tmp_path: Path) -> None:
     assert weather["t"].dt.tz is not None
     assert weather.loc[weather["station_id"] == "03379", "ghi_w_m2"].isna().all()
     assert "03379" in api.meta("weather", root=weather_root)["stations_without_solar"]
+    assert weather["t"].min() == pd.Timestamp("2025-03-17T00:00:00Z")
 
     solar = api._parse_dwd_weather_raw((FIXTURES / "dwd_real_st_2026.txt").read_bytes())
     row = solar[solar["t"] == pd.Timestamp("2026-08-31T20:00:00Z")].iloc[0]
     assert row["station_id"] == "01048"
+    assert row["ghi_w_m2"] == pytest.approx(0.0 * 10000 / 3600)
+    daylight = solar[solar["t"] == pd.Timestamp("2026-08-31T06:00:00Z")].iloc[0]
+    assert daylight["ghi_w_m2"] == pytest.approx(62.0 * 10000 / 3600)

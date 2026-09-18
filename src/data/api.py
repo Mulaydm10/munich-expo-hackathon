@@ -778,11 +778,7 @@ def _parse_grid_load_raw(raw: bytes) -> pd.DataFrame:
     if "Photovoltaik" in by_name:
         output["solar_mwh"] = _decimal_comma_to_float(df[by_name["Photovoltaik"][0]])
     ignored = sorted(
-        name
-        for name, columns in by_name.items()
-        if name != "Netzlast"
-        and name not in {"Wind Onshore", "Wind Offshore", "Wind", "Photovoltaik"}
-        for _ in columns[:1]
+        set(by_name) - {"Netzlast", "Wind Onshore", "Wind Offshore", "Wind", "Photovoltaik"}
     )
     result = pd.DataFrame(output)
     result.attrs["native_resolution_min"] = _native_resolution_minutes(t_start, t_end)
@@ -1016,12 +1012,28 @@ def _parse_generation_mix_raw(
 
 
 def _dwd_solar_to_utc(df: pd.DataFrame) -> pd.DataFrame:
-    """Convert DWD ST MEZ hour-ending observations to UTC W/m²."""
+    """Convert DWD ST observations to UTC W/m².
+
+    Per DWD's product description MESS_DATUM is MEZ, end of interval. The
+    interval start is therefore the floored MESS_DATUM minus one hour for
+    hour-ending data and one further hour to convert fixed MEZ to UTC.
+    """
     station_id = df["STATIONS_ID"].str.strip().str.zfill(5)
-    t = pd.to_datetime(df["MESS_DATUM_WOZ"].str.strip(), format="%Y%m%d%H:%M")
+    source_time = pd.to_datetime(df["MESS_DATUM"].str.strip(), format="%Y%m%d%H:%M")
+    if pd.DataFrame({"station_id": station_id, "source_time": source_time}).duplicated().any():
+        raise ValueError("duplicate solar values for (station_id, MESS_DATUM)")
+    t = source_time
     t_utc = (t - pd.Timedelta(hours=2)).dt.floor("h").dt.tz_localize("UTC")
     value = pd.to_numeric(df["FG_LBERG"].str.strip(), errors="coerce").replace(-999, np.nan)
-    return pd.DataFrame({"station_id": station_id, "t": t_utc, "ghi_w_m2": value * 10000 / 3600})
+    result = pd.DataFrame(
+        {
+            "station_id": station_id,
+            "t": t_utc,
+            "source_time": source_time,
+            "ghi_w_m2": value * 10000 / 3600,
+        }
+    ).sort_values("source_time")
+    return result.drop_duplicates(["station_id", "t"], keep="last").drop(columns="source_time")
 
 
 def _read_dwd_product(raw: bytes) -> pd.DataFrame:
@@ -1286,19 +1298,41 @@ def _canonicalise_dwd_weather(*, root: Path) -> Path:
         for variable in variable_frames:
             if variable in frame:
                 variable_frames[variable].append(frame[["station_id", "t", variable]])
-    merged: pd.DataFrame | None = None
-    for variable, pieces in variable_frames.items():
-        if not pieces:
-            continue
-        frame = pd.concat(pieces, ignore_index=True)
-        duplicate = frame.duplicated(subset=["station_id", "t"], keep=False)
-        if duplicate.any():
-            raise ValueError(f"duplicate ({variable}) values for (station_id, t)")
-        merged = frame if merged is None else merged.merge(
-            frame, on=["station_id", "t"], how="outer"
-        )
-    if merged is None:
+    window_frames = variable_frames["temp_c"] or variable_frames["wind_ms"]
+    temperature_window_start = (
+        min(frame["t"].min() for frame in window_frames) if window_frames else None
+    )
+
+    def merge_variables(*, drop_before_temperature_window: bool, check_duplicates: bool) -> pd.DataFrame | None:
+        merged: pd.DataFrame | None = None
+        for variable, pieces in variable_frames.items():
+            if not pieces:
+                continue
+            frame = pd.concat(pieces, ignore_index=True)
+            if drop_before_temperature_window and temperature_window_start is not None:
+                frame = frame.loc[frame["t"] >= temperature_window_start].copy()
+            if check_duplicates:
+                duplicate = frame.duplicated(subset=["station_id", "t"], keep=False)
+                if duplicate.any():
+                    raise ValueError(f"duplicate ({variable}) values for (station_id, t)")
+            merged = frame if merged is None else merged.merge(
+                frame, on=["station_id", "t"], how="outer"
+            )
+        return merged
+
+    merged_before_window = merge_variables(
+        drop_before_temperature_window=False, check_duplicates=False
+    )
+    if merged_before_window is None:
         raise ValueError("no recognised DWD variables in raw weather data")
+    n_rows_before_temperature_window_dropped = 0
+    if temperature_window_start is not None:
+        before_window = merged_before_window["t"] < temperature_window_start
+        n_rows_before_temperature_window_dropped = int(before_window.sum())
+    merged = merge_variables(
+        drop_before_temperature_window=True, check_duplicates=True
+    )
+    assert merged is not None
     present_variables = [variable for variable in variable_frames if variable in merged]
     merged = merged.dropna(subset=present_variables, how="all")
     merged = merged.sort_values(["station_id", "t"]).reset_index(drop=True)
@@ -1334,6 +1368,7 @@ def _canonicalise_dwd_weather(*, root: Path) -> Path:
                     quarter.loc[quarter["ghi_w_m2"].notna(), "station_id"].unique()
                 )
             ),
+            "n_rows_before_temperature_window_dropped": n_rows_before_temperature_window_dropped,
             **missing_counts,
         },
     )
