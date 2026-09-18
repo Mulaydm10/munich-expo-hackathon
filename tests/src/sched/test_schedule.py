@@ -220,6 +220,46 @@ def test_peak_term_flattens_load_and_beats_asap_peak():
     assert peak_audit["envelope_violation_kwh"] == pytest.approx(0.0, abs=1e-6)
 
 
+def test_partial_grid_overlap_uses_bin_average_power_caps():
+    times = grid("2026-01-10T08:45", 3)
+    envelope = mk_envelope("S1", times[:-1], 100.0)
+    prices = mk_prices(times[:-1], 50.0)
+    sessions = mk_sessions([
+        dict(
+            session_id="partial",
+            site_id="S1",
+            t_arrive=pd.Timestamp("2026-01-10T08:50"),
+            t_depart=pd.Timestamp("2026-01-10T09:10"),
+            energy_kwh=18.75,
+            max_power_kw=75.0,
+        )
+    ])
+
+    scheduled = api.schedule(sessions, envelope, prices)
+
+    assert scheduled["power_kw"].max() <= 50.0 + 1e-6
+    assert scheduled["power_kw"].sum() * 0.25 == pytest.approx(18.75, abs=1e-6)
+
+
+def test_partial_grid_overlap_deadline_capacity_is_enforced():
+    times = grid("2026-01-10T08:45", 3)
+    envelope = mk_envelope("S1", times[:-1], 100.0)
+    prices = mk_prices(times[:-1], 50.0)
+    sessions = mk_sessions([
+        dict(
+            session_id="partial",
+            site_id="S1",
+            t_arrive=pd.Timestamp("2026-01-10T08:50"),
+            t_depart=pd.Timestamp("2026-01-10T09:10"),
+            energy_kwh=26.0,
+            max_power_kw=75.0,
+        )
+    ])
+
+    with pytest.raises(api.Infeasible, match="deadline"):
+        api.schedule(sessions, envelope, prices)
+
+
 def test_peak_price_zero_is_bit_identical():
     times = grid("2026-01-10T00:00", 8)
     prices = mk_prices(times[:-1], [20.0] * 4 + [200.0] * 4)

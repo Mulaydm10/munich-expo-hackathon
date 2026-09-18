@@ -255,17 +255,30 @@ class _SiteProblem:
         self.price = dict(zip(price_t, pr["price_eur_mwh"].astype(float)))
         self.commitments = list(commitments)
 
-        # per-session window: sorted times within [t_arrive, t_depart) that also
-        # appear in this site's envelope grid.
+        # Per-session windows use bin-average power caps for partial overlap.
         self.windows: dict[str, list[pd.Timestamp]] = {}
+        self.cap_kw: dict[str, dict[pd.Timestamp, float]] = {}
         self.max_power: dict[str, float] = {}
         self.energy_due: dict[str, float] = {}
         for row in self.sessions.itertuples(index=False):
             sid = row.session_id
             arrive = pd.Timestamp(row.t_arrive)
             depart = pd.Timestamp(row.t_depart)
-            window = [t for t in self.times if arrive <= t < depart]
+            caps = {}
+            for t in self.times:
+                dt_t = float(self.dt.loc[t])
+                interval_end = t + pd.Timedelta(dt_t, unit="h")
+                overlap_h = max(
+                    0.0,
+                    (
+                        min(depart, interval_end) - max(arrive, t)
+                    ).total_seconds() / 3600.0,
+                )
+                if overlap_h > 0.0:
+                    caps[t] = float(row.max_power_kw) * overlap_h / dt_t
+            window = list(caps)
             self.windows[sid] = window
+            self.cap_kw[sid] = caps
             self.max_power[sid] = float(row.max_power_kw)
             self.energy_due[sid] = float(row.energy_kwh)
 
@@ -288,7 +301,7 @@ class _SiteProblem:
             due = self.energy_due[sid]
             if due <= _TOL:
                 continue
-            available = sum(self.max_power[sid] * float(self.dt.loc[t]) for t in window)
+            available = sum(self.cap_kw[sid][t] * float(self.dt.loc[t]) for t in window)
             if available < due - _TOL:
                 raise Infeasible(
                     f"src.sched: deadline infeasible for session {sid!r} at site "
@@ -349,7 +362,7 @@ def _solve_lp(
     for (sid, t), i in var_index.items():
         dt = float(problem.dt.loc[t])
         c[i] = problem.price[t] * dt / 1000.0  # EUR per kW of this variable
-        bounds[i] = (0.0, problem.max_power[sid])
+        bounds[i] = (0.0, problem.cap_kw[sid][t])
     if use_peak_term:
         c[peak_index] = peak_price_eur_per_kw
         bounds.append((0.0, None))
@@ -421,13 +434,13 @@ def _solve_lp(
     records = []
     for (sid, t), i in var_index.items():
         raw = float(res.x[i])
-        lo, hi = 0.0, problem.max_power[sid]
+        lo, hi = 0.0, problem.cap_kw[sid][t]
         if raw < lo - 1e-4 or raw > hi + 1e-4:
             # a real violation, not solver noise -- never coerced away (see the module
             # docstring's "no numerical-clip coercion metric" note / issue #27 finding 9).
             raise RuntimeError(
                 f"src.sched: LP returned power_kw={raw:.6f} for session {sid!r} at t={t}, "
-                f"outside its [0, {hi}] bound by more than solver noise -- solver bug or "
+            f"outside its [0, {hi}] bound by more than solver noise -- solver bug or "
                 f"numerical failure, not something to clip past."
             )
         records.append((t, sid, raw))
@@ -500,19 +513,18 @@ def _solve_site_greedy(
         idx = window_pos[sid][t]
         remaining_slots = len(window) - idx
         e = remaining_energy[sid]
-        mp = problem.max_power[sid]
         acc = 0.0
         used = 0
         for tt in window[idx:]:
             if acc >= e - _TOL:
                 break
-            acc += mp * float(problem.dt.loc[tt])
+            acc += problem.cap_kw[sid][tt] * float(problem.dt.loc[tt])
             used += 1
         return remaining_slots - used
 
     def room(sid: str, t: pd.Timestamp, dt: float) -> float:
         already = assigned.get((sid, t), 0.0)
-        return min(problem.max_power[sid] - already, remaining_energy[sid] / dt)
+        return min(problem.cap_kw[sid][t] - already, remaining_energy[sid] / dt)
 
     def take_for(sid: str, t: pd.Timestamp, dt: float, amount: float) -> None:
         assigned[(sid, t)] = assigned.get((sid, t), 0.0) + amount
