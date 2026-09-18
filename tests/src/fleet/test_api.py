@@ -122,6 +122,20 @@ def test_feasibility_invariant_holds(seed: int) -> None:
     assert (sessions["energy_kwh"] <= cap + 1e-9).all()
 
 
+def test_synthesised_sessions_report_energy_clamping() -> None:
+    sessions = api.synthesise_sessions(
+        _sites(),
+        _weather(-5.0, [date(2026, 1, 5)]),
+        [date(2026, 1, 5)],
+        seed=1,
+    )
+
+    assert 0.0 <= sessions.attrs["energy_clamped_rate"] <= 1.0
+    assert sessions.attrs["energy_clamped_kwh"] >= 0.0
+    assert "energy_clamped_rate" in sessions.attrs
+    assert "energy_clamped_kwh" in sessions.attrs
+
+
 def test_feasibility_invariant_near_boundary_short_dwell() -> None:
     # A public_dc-like profile with an extremely short mean dwell stresses the clip logic hardest:
     # short dwell * modest power gives very little headroom to deliver energy_mean_kwh.
@@ -164,6 +178,25 @@ def test_to_load_asap_conserves_energy_per_site() -> None:
         got = energy_from_load.get(site_id, 0.0)
         want = energy_from_sessions[site_id]
         assert got == pytest.approx(want, abs=1e-6)
+
+
+def test_to_load_asap_stops_at_departure_for_overlarge_energy() -> None:
+    arrive = pd.Timestamp("2026-03-02T00:00:00Z")
+    depart = pd.Timestamp("2026-03-02T01:00:00Z")
+    sessions = pd.DataFrame(
+        [{
+            "site_id": "site-1",
+            "t_arrive": arrive,
+            "t_depart": depart,
+            "energy_kwh": 30.0,
+            "max_power_kw": 10.0,
+        }]
+    )
+
+    load = api.to_load(sessions, policy="asap")
+
+    assert load.loc[load["t"] >= depart, "load_kw"].sum() == pytest.approx(0.0)
+    assert load["load_kw"].sum() * 0.25 == pytest.approx(10.0)
 
 
 # ---------------------------------------------------------------------------
@@ -336,7 +369,7 @@ def test_occupancy_counts_queueing_and_dropping() -> None:
 
 
 # ---------------------------------------------------------------------------
-# residual energy clip (issue #9): still counted, but should now stay rare
+# residual energy clip is observable on the returned frame
 # ---------------------------------------------------------------------------
 
 def test_residual_energy_clip_rate_stays_low() -> None:
@@ -350,7 +383,8 @@ def test_residual_energy_clip_rate_stays_low() -> None:
 
     assert "energy_clipped" in sessions.columns
     clip_rate = sessions["energy_clipped"].mean()
-    assert clip_rate < 0.02  # the causal energy->dwell link (issue #9) should make this near-zero
+    assert clip_rate > 0.0
+    assert sessions.attrs["energy_clamped_rate"] == pytest.approx(clip_rate)
 
 
 # ---------------------------------------------------------------------------

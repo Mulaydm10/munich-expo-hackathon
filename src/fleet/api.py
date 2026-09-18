@@ -113,11 +113,6 @@ _SESSION_FLEX_COLUMNS = ("site_id", "t_arrive", "deadline_t", "energy_kwh", "max
 # queueing indefinitely -- the arrival is dropped, not delayed forever (issue #9 occupancy fix).
 MAX_QUEUE_WAIT_H = 2.0
 
-# guess: a real driver leaves once charging is done, plus a bit of margin (unplugging, walking
-# back to the vehicle) -- not the instant the battery hits target. 15% headroom above the
-# physically-required charge time (issue #9 causal energy/dwell fix).
-ENERGY_DWELL_SLACK = 0.15
-
 # Sentinel "always free" time for a site's points before any session has occupied them.
 _NEVER_BUSY = pd.Timestamp("1970-01-01", tz="UTC")
 
@@ -226,12 +221,8 @@ def synthesise_sessions(
     compares them with `==` for equality, which raises on a DataFrame-valued attr).
 
     Feasibility invariant enforced for every emitted row: t_arrive < t_depart, energy_kwh > 0, and
-    energy_kwh <= max_power_kw * dwell_hours. Energy is drawn first and dwell is derived from it
-    (`dwell_hours = max(exponential(dwell_mean_h), energy_kwh / max_power_kw * (1 +
-    ENERGY_DWELL_SLACK))`) so a real, causal driver-leaves-when-done relationship is what keeps a
-    session feasible, not an independent draw forced back into range after the fact -- the
-    per-row `energy_clipped` column stays True only for the residual case this still can't cover
-    (an infeasible draw is clipped and counted, never emitted, per contracts/src/fleet.md).
+    energy_kwh <= max_power_kw * dwell_hours. Energy and dwell are drawn independently; energy
+    above the maximum deliverable amount is clipped and counted in the returned frame's attrs.
 
     `FleetParams.energy_mean_kwh` is the mean of a full (non-top-up) session at the >=10C
     reference temperature specifically, not a general claim about what this function emits: the
@@ -255,6 +246,8 @@ def synthesise_sessions(
     ]
     rows: list[dict] = []
     occupancy_rows: dict[str, dict] = {}
+    n_energy_clamped = 0
+    energy_clamped_kwh = 0.0
 
     for _, site in sites.iterrows():
         site_id = site["site_id"]
@@ -279,8 +272,6 @@ def synthesise_sessions(
                 arrival_h = float(rng.normal(p.arrival_mode_h, p.arrival_spread_h)) % 24.0
                 t_arrive_natural = _local_hour_to_utc(day, arrival_h)
 
-                # energy first: a real driver leaves once charging is done, so dwell is derived
-                # from energy below, not drawn independently (issue #9 causal fix).
                 energy_scale = 0.25 if is_topup else 1.0
                 mu, sigma = _lognormal_mu_sigma(p.energy_mean_kwh * energy_scale, p.energy_cv)
                 energy_kwh = float(rng.lognormal(mu, sigma)) * temp_multiplier
@@ -288,14 +279,13 @@ def synthesise_sessions(
 
                 dwell_scale = 0.3 if is_topup else 1.0
                 dwell_natural_h = max(float(rng.exponential(p.dwell_mean_h * dwell_scale)), 0.05)
-                required_dwell_h = energy_kwh / max_power_kw * (1.0 + ENERGY_DWELL_SLACK)
-                dwell_hours = max(dwell_natural_h, required_dwell_h)
-
-                cap = max_power_kw * dwell_hours
-                # residual safety net only -- see docstring, this should very rarely fire now
-                energy_capped = min(energy_kwh, cap * 0.98)
-                energy_clipped = bool(energy_capped < energy_kwh - 1e-9)
-                energy_kwh = max(energy_capped, 1e-4)
+                dwell_hours = dwell_natural_h
+                deliverable = max_power_kw * dwell_hours
+                energy_clipped = energy_kwh > deliverable + 1e-9
+                if energy_clipped:
+                    n_energy_clamped += 1
+                    energy_clamped_kwh += energy_kwh - deliverable
+                    energy_kwh = deliverable
 
                 candidates.append({
                     "day": day,
@@ -364,6 +354,8 @@ def synthesise_sessions(
         empty["t_depart"] = pd.to_datetime(empty["t_depart"], utc=True)
         empty["deadline_t"] = pd.to_datetime(empty["deadline_t"], utc=True)
         empty.attrs["occupancy"] = occupancy
+        empty.attrs["energy_clamped_rate"] = 0.0
+        empty.attrs["energy_clamped_kwh"] = 0.0
         return empty
 
     out = pd.DataFrame(rows, columns=columns)
@@ -372,6 +364,8 @@ def synthesise_sessions(
     out["deadline_t"] = out["t_depart"]
     out = out.sort_values(["site_id", "t_arrive", "session_id"]).reset_index(drop=True)
     out.attrs["occupancy"] = occupancy
+    out.attrs["energy_clamped_rate"] = n_energy_clamped / len(out)
+    out.attrs["energy_clamped_kwh"] = float(energy_clamped_kwh)
     return out
 
 
@@ -404,9 +398,9 @@ def to_load(
     """The uncontrolled baseline load: t, site_id, load_kw.
 
     `asap` charges at max_power_kw from t_arrive until energy_kwh is delivered (the behaviour
-    this project exists to improve on). `even` spreads energy_kwh evenly across the whole dwell
-    window [t_arrive, t_depart). Conserves energy per site: sum(load_kw) * bin_hours ==
-    sum(energy_kwh), within float tolerance.
+    this project exists to improve on), but never beyond t_depart. `even` spreads energy_kwh
+    evenly across the whole dwell window [t_arrive, t_depart). Conserves energy per site for
+    sessions whose energy_kwh <= max_power_kw*dwell; otherwise delivers what the dwell allows.
 
     Returns a **dense** `t x site_id` grid over the span covered by `sessions` (floor of the
     earliest `t_arrive` to ceil of the latest `t_depart`, across every site in the input): every
@@ -434,7 +428,11 @@ def to_load(
         if policy == "asap":
             rate_kw = row.max_power_kw
             duration_h = row.energy_kwh / rate_kw if rate_kw > 0 else 0.0
-            start, end = row.t_arrive, row.t_arrive + pd.Timedelta(duration_h, unit="h")
+            start = row.t_arrive
+            end = min(
+                row.t_arrive + pd.Timedelta(duration_h, unit="h"),
+                row.t_depart,
+            )
         else:  # even
             rate_kw = row.energy_kwh / dwell_hours
             start, end = row.t_arrive, row.t_depart
