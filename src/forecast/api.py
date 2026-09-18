@@ -6,6 +6,10 @@ This module is the lane's ONLY cross-lane surface: other lanes import
 `src.forecast.api` and nothing else. See `contracts/src/forecast.md` for the
 interface this lane owes the rest of the project, and
 `contracts/CONVENTIONS.md` for units, time handling and the data layout.
+
+Forecasting the portfolio before splitting it to sites preserves the aggregate
+signal when most individual site intervals are zero; historical slot shares
+then allocate the portfolio quantiles back to each site's market view.
 """
 
 from __future__ import annotations
@@ -22,6 +26,7 @@ from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.linear_model import QuantileRegressor
 
 LANE = "src/forecast"
+PORTFOLIO_ID = "__portfolio__"
 
 QUANTILES: tuple[float, ...] = (0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95)
 
@@ -125,6 +130,78 @@ def _lookup(series: pd.Series, at: pd.DatetimeIndex | pd.Series) -> np.ndarray:
     invented (no ffill/bfill) — see CONVENTIONS' "no invented statistics" rule.
     """
     return series.reindex(pd.DatetimeIndex(at)).to_numpy()
+
+
+def aggregate_load(load: pd.DataFrame) -> pd.DataFrame:
+    """Aggregate duplicate-cleaned site load to the portfolio by timestamp."""
+    _require_columns(load, ["t", "site_id", "load_kw"], "load")
+    clean = load.drop_duplicates(subset=["t", "site_id"], keep="last")
+    aggregate = clean.groupby("t", as_index=False, sort=True)["load_kw"].sum()
+    aggregate.insert(1, "site_id", PORTFOLIO_ID)
+    return aggregate[["t", "site_id", "load_kw"]]
+
+
+def site_shares(load: pd.DataFrame) -> pd.DataFrame:
+    """Compute each site's historical share for every 15-minute slot."""
+    _require_columns(load, ["t", "site_id", "load_kw"], "load")
+    clean = load.drop_duplicates(subset=["t", "site_id"], keep="last").copy()
+    clean["slot_15min"] = clean["t"].dt.hour * 4 + clean["t"].dt.minute // 15
+    sites = pd.Index(sorted(clean["site_id"].unique()), name="site_id")
+    slots = pd.Index(range(96), name="slot_15min")
+    means = (
+        clean.groupby(["site_id", "slot_15min"], sort=True)["load_kw"]
+        .mean()
+        .reindex(pd.MultiIndex.from_product([sites, slots]))
+        .fillna(0.0)
+        .unstack("slot_15min")
+    )
+    totals = means.sum(axis=0)
+    overall = clean.groupby("site_id", sort=True)["load_kw"].sum().reindex(sites, fill_value=0.0)
+    grand_total = float(overall.sum())
+    fallback = (
+        overall / grand_total
+        if grand_total > 0.0
+        else pd.Series(1.0 / len(sites), index=sites)
+    )
+    shares = means.copy()
+    for slot in slots:
+        total = float(totals.loc[slot])
+        shares[slot] = means[slot] / total if total > 0.0 else fallback
+    shares = shares.div(shares.sum(axis=0), axis=1)
+    result = shares.rename_axis("site_id").reset_index().melt(
+        id_vars="site_id", var_name="slot_15min", value_name="share"
+    )
+    return result.sort_values(["site_id", "slot_15min"]).reset_index(drop=True)
+
+
+def split_portfolio(preds: pd.DataFrame, shares: pd.DataFrame) -> pd.DataFrame:
+    """Split portfolio quantiles to sites using their historical slot shares."""
+    _require_columns(preds, ["t", "site_id"], "preds")
+    _require_columns(shares, ["site_id", "slot_15min", "share"], "shares")
+    if set(preds["site_id"].dropna().unique()) != {PORTFOLIO_ID}:
+        raise ValueError(f"split_portfolio: preds must contain only {PORTFOLIO_ID!r}")
+    quantile_cols = [c for c in preds.columns if c.startswith("q") and c[1:].isdigit()]
+    if not quantile_cols:
+        raise ValueError("split_portfolio: preds has no qNN columns")
+    share_table = shares.copy()
+    share_table["slot_15min"] = share_table["slot_15min"].astype(int)
+    sites = share_table["site_id"].drop_duplicates().sort_values()
+    rows = []
+    for site_id in sites:
+        site_shares_for_times = share_table.loc[
+            share_table["site_id"] == site_id, ["slot_15min", "share"]
+        ]
+        site_preds = preds.copy()
+        site_preds["site_id"] = site_id
+        site_preds["slot_15min"] = site_preds["t"].dt.hour * 4 + site_preds["t"].dt.minute // 15
+        site_preds = site_preds.merge(site_shares_for_times, on="slot_15min", how="left", validate="many_to_one")
+        if site_preds["share"].isna().any():
+            raise ValueError(f"split_portfolio: missing slot share for site {site_id!r}")
+        for col in quantile_cols:
+            site_preds[col] = site_preds[col] * site_preds["share"]
+        rows.append(site_preds.drop(columns=["slot_15min", "share"]))
+    result = pd.concat(rows, ignore_index=True)
+    return result[preds.columns].sort_values(["site_id", "t"]).reset_index(drop=True)
 
 
 # --------------------------------------------------------------------------
@@ -414,6 +491,33 @@ def _seasonal_naive_predict(history: pd.DataFrame, query: pd.DataFrame) -> np.nd
         vals = _lookup(h, q["t"] - lag)
         preds[query["site_id"].to_numpy() == site_id] = vals
     return preds
+
+
+def seasonal_naive(
+    history: pd.DataFrame, times: pd.DatetimeIndex | pd.Series, *, days: int = 7
+) -> np.ndarray:
+    """Return the historical value at each timestamp minus `days` days."""
+    _require_columns(history, ["t", "load_kw"], "history")
+    values = history.drop_duplicates(subset="t", keep="last").set_index("t")["load_kw"].sort_index()
+    return _lookup(values, pd.DatetimeIndex(times) - pd.Timedelta(days=days))
+
+
+def point_metrics(y_true, y_pred) -> dict[str, float]:
+    """Return MAE, WAPE, and the number of paired non-NaN observations."""
+    truth = np.asarray(y_true, dtype=float)
+    pred = np.asarray(y_pred, dtype=float)
+    if truth.shape != pred.shape:
+        raise ValueError(f"point_metrics: y_true and y_pred must have the same shape; got {truth.shape} and {pred.shape}")
+    valid = ~np.isnan(truth) & ~np.isnan(pred)
+    truth = truth[valid]
+    pred = pred[valid]
+    errors = np.abs(truth - pred)
+    denominator = float(np.abs(truth).sum())
+    return {
+        "mae_kw": float(errors.mean()) if len(errors) else float("nan"),
+        "wape": float(errors.sum() / denominator) if denominator else float("nan"),
+        "n": int(len(errors)),
+    }
 
 
 def _climatological_quantiles(history: pd.DataFrame, quantiles: tuple[float, ...]) -> dict[float, float]:
