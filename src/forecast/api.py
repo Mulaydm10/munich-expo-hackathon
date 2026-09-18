@@ -422,10 +422,39 @@ def _climatological_quantiles(history: pd.DataFrame, quantiles: tuple[float, ...
     return {tau: float(np.quantile(y, tau)) for tau in quantiles}
 
 
-def pinball_loss(y_true, q_pred, tau: float) -> float:
-    """Mean pinball (quantile) loss of `q_pred` against `y_true` at quantile level `tau`."""
+def _metric_inputs(y_true, q_pred, *, name: str) -> tuple[np.ndarray, np.ndarray]:
+    """Shared guard for the metric functions (issue #11).
+
+    A calibration metric that returns a number for degenerate input is worse
+    than one that raises: `np.mean(y <= q)` on an all-NaN column silently
+    returns 0.0 (every NaN comparison is False), and on an empty array returns
+    NaN with only a RuntimeWarning. Both read as "the model is badly
+    calibrated" rather than "you measured nothing", and this lane's whole job
+    is that the calibration number can be trusted. So: empty, length-mismatched
+    and NaN-carrying input raise by name instead."""
     y_true = np.asarray(y_true, dtype=float)
     q_pred = np.asarray(q_pred, dtype=float)
+    if y_true.shape != q_pred.shape:
+        raise ValueError(
+            f"{name}: y_true and q_pred must have the same shape; "
+            f"got {y_true.shape} and {q_pred.shape}"
+        )
+    if y_true.size == 0:
+        raise ValueError(f"{name}: empty input — nothing to measure")
+    n_nan = int(np.isnan(y_true).sum() + np.isnan(q_pred).sum())
+    if n_nan:
+        raise ValueError(
+            f"{name}: input carries {n_nan} NaN value(s). Mask them at the call "
+            "site so the number of observations behind the metric is explicit; "
+            "silently comparing against NaN returns a plausible-looking score "
+            "computed from nothing."
+        )
+    return y_true, q_pred
+
+
+def pinball_loss(y_true, q_pred, tau: float) -> float:
+    """Mean pinball (quantile) loss of `q_pred` against `y_true` at quantile level `tau`."""
+    y_true, q_pred = _metric_inputs(y_true, q_pred, name="pinball_loss")
     diff = y_true - q_pred
     return float(np.mean(np.maximum(tau * diff, (tau - 1) * diff)))
 
@@ -433,8 +462,7 @@ def pinball_loss(y_true, q_pred, tau: float) -> float:
 def coverage(y_true, q_pred, tau: float) -> float:
     """Empirical P(y <= q_pred). `tau` is the nominal level being checked against."""
     del tau  # nominal level is carried by the caller/plot, not needed for the computation itself
-    y_true = np.asarray(y_true, dtype=float)
-    q_pred = np.asarray(q_pred, dtype=float)
+    y_true, q_pred = _metric_inputs(y_true, q_pred, name="coverage")
     return float(np.mean(y_true <= q_pred))
 
 
@@ -452,7 +480,16 @@ def reliability_curve(y_true, preds: pd.DataFrame) -> pd.DataFrame:
         if col not in preds.columns:
             continue
         rows.append({"tau_nominal": tau, "coverage_empirical": coverage(y_true, preds[col], tau)})
-    return pd.DataFrame(rows, columns=["tau_nominal", "coverage_empirical"])
+    if not rows:
+        raise ValueError("reliability_curve: preds carries none of the QUANTILES columns")
+    out = pd.DataFrame(rows, columns=["tau_nominal", "coverage_empirical"])
+    # Issue #11: coverage never travels alone. A predictor of [0, inf) is
+    # perfectly calibrated and worthless, so the width that bought this
+    # coverage rides in the same frame rather than in a separate call the
+    # caller may forget to make. Constant down the column by construction --
+    # sharpness is a property of the whole prediction set, not of one tau.
+    out["sharpness"] = sharpness(preds)
+    return out.sort_values("tau_nominal").reset_index(drop=True)
 
 
 def sharpness(preds: pd.DataFrame) -> float:
@@ -460,9 +497,17 @@ def sharpness(preds: pd.DataFrame) -> float:
     cols = [c for c in preds.columns if c.startswith("q") and c[1:].isdigit()]
     if not cols:
         raise ValueError("sharpness: preds has no qNN columns")
+    if len(preds) == 0:
+        raise ValueError("sharpness: empty preds — nothing to measure")
     lo_col = min(cols, key=lambda c: int(c[1:]))
     hi_col = max(cols, key=lambda c: int(c[1:]))
-    return float((preds[hi_col] - preds[lo_col]).mean())
+    width = preds[hi_col] - preds[lo_col]
+    if width.isna().any():
+        raise ValueError(
+            f"sharpness: {int(width.isna().sum())} NaN interval width(s) between "
+            f"{lo_col} and {hi_col}; a mean over them would be NaN or silently partial"
+        )
+    return float(width.mean())
 
 
 def backtest(
@@ -511,11 +556,28 @@ def backtest(
 
         y_true = test_target["load_kw"].to_numpy(dtype=float)
         valid = ~np.isnan(y_true)
+
+        # Issue #11: the fold boundaries are emitted so rolling-origin is
+        # verifiable from the OUTPUT rather than taken on trust from this
+        # docstring. Asserted here too -- a random split in this lane is a
+        # bug, not a style choice, and it must fail loudly if the chunking
+        # above is ever changed.
+        train_start, train_end = train_times.min(), train_times.max()
+        test_start, test_end = test_times.min(), test_times.max()
+        if not train_end < test_start:
+            raise AssertionError(
+                f"backtest fold {fold_idx} is not rolling-origin: training window "
+                f"ends {train_end} but its test window starts {test_start}"
+            )
         # the seasonal-naive baseline has its own, separate NaN pattern (it
         # needs a full 7-day-back lookup that early test rows may not have);
         # each metric masks against its own NaNs so one baseline's missing
         # values can't silently poison another's (or the model's) mean loss.
         naive_valid = valid & ~np.isnan(naive_point)
+        # sharpness is per-fold, not per-tau: it is the width of the whole
+        # predicted interval. Emitted on every row so that no caller can read
+        # a coverage number out of this table without the width next to it.
+        fold_sharpness = sharpness(preds.loc[valid])
         for tau in quantiles:
             col = _q_col(tau)
             model_pred = preds[col].to_numpy()
@@ -525,8 +587,16 @@ def backtest(
                     "fold": fold_idx,
                     "tau": tau,
                     "site_set": "all",
+                    "train_start": train_start,
+                    "train_end": train_end,
+                    "test_start": test_start,
+                    "test_end": test_end,
                     "n_obs": int(valid.sum()),
                     "n_obs_seasonal_naive": int(naive_valid.sum()),
+                    "coverage_model": coverage(
+                        y_true[model_valid], model_pred[model_valid], tau
+                    ),
+                    "sharpness_model": fold_sharpness,
                     "pinball_model": pinball_loss(
                         y_true[model_valid], model_pred[model_valid], tau
                     ),
