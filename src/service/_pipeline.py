@@ -852,10 +852,14 @@ def _clamp_sessions_to_grid(
             keep.append(False)
         else:
             keep.append(True)
-            if row.energy_kwh > deliverable + 1e-8:
+            excess = float(row.energy_kwh - deliverable)
+            if excess > 1e-6:
                 clamped_count += 1
-                clamped_kwh += float(row.energy_kwh - deliverable)
-                sessions_for_schedule.at[row.Index, "energy_kwh"] = deliverable
+                clamped_kwh += excess
+            if excess > -1e-6:
+                sessions_for_schedule.at[row.Index, "energy_kwh"] = min(
+                    float(row.energy_kwh), deliverable
+                )
     sessions_for_schedule = sessions_for_schedule.loc[keep].copy()
     if clamped_count or dropped_sessions:
         warns.add(
