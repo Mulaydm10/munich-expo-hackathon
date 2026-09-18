@@ -292,14 +292,14 @@ def test_nearest_weather_station_is_deterministic(tmp_path: Path) -> None:
     second = api.nearest_weather_station(52.0, 13.0)
     third = api.nearest_weather_station(52.0, 13.0)
     assert first == second == third
-    assert first == "DWD-BER"
+    assert first == "00433"
 
 
 def test_nearest_weather_station_is_sane_near_a_border() -> None:
     # A point just inside Germany near the French border, close to the
     # Saarbruecken reference station.
     result = api.nearest_weather_station(49.20, 6.80)
-    assert result == "DWD-SAAR"
+    assert result == "04336"
     assert result in api._WEATHER_STATIONS
 
 
@@ -677,3 +677,79 @@ def test_thousands_separated_numbers_parse_and_ambiguous_ones_refuse() -> None:
     # A malformed group width is not silently accepted either.
     with _pytest.raises(ValueError, match="not German-locale numbers"):
         data_api._decimal_comma_to_float(pd.Series(["1.2345,6"]))
+
+    missing = data_api._decimal_comma_to_float(pd.Series(["-", "", "1.728,04"]))
+    assert missing.isna().tolist() == [True, True, False]
+    assert missing.iloc[2] == pytest.approx(1728.04)
+
+
+# =====================================================================
+# Real SMARD and DWD bytes
+# =====================================================================
+
+REAL_SMARD_NOW = (
+    "smard_real_now_generation.csv",
+    "smard_real_now_consumption.csv",
+)
+
+
+def test_real_smard_grid_load_and_trailing_missing_rows(tmp_path: Path) -> None:
+    root = _root(tmp_path, "real_grid")
+    _seed(root, "smard_load", *REAL_SMARD_NOW)
+    api.canonicalise("smard_load", root=root)
+    df = api.load("grid_load", root=root)
+    assert len(df) == 423
+    assert df["t"].is_unique
+    assert df["load_mw"].between(30_000, 80_000).all()
+    assert (df["wind_mw"] >= 0).all()
+    assert set(df.columns) == {"t", "load_mw", "wind_mw", "solar_mw", "residual_mw"}
+    assert (df["residual_mw"] == df["load_mw"] - df["wind_mw"] - df["solar_mw"]).all()
+    assert api.meta("grid_load", root=root)["n_rows_dropped_missing_values"] == 249
+
+
+def test_real_smard_price_and_generation_mix(tmp_path: Path) -> None:
+    price_root = _root(tmp_path, "real_price")
+    _seed(price_root, "epex_day_ahead", "smard_real_price.csv")
+    api.canonicalise("epex_day_ahead", root=price_root)
+    prices = api.load("prices", root=price_root)
+    assert len(prices) == 671
+    assert api.meta("prices", root=price_root)["native_resolution_min"] == 15
+    assert api.meta("prices", root=price_root)["resample_method"] == "native_15min"
+    assert prices["price_eur_mwh"].iloc[0] == pytest.approx(188.79)
+
+    carbon_root = _root(tmp_path, "real_carbon")
+    _seed(carbon_root, "generation_mix", "smard_real_generation_mix.csv")
+    api.canonicalise("generation_mix", root=carbon_root)
+    carbon_meta = api.meta("carbon", root=carbon_root)
+    assert len(api.load("carbon", root=carbon_root)) == 671
+    assert api.load("carbon", root=carbon_root)["intensity_g_kwh"].between(50, 800).all()
+    assert carbon_meta["excluded_generation_categories"] == [
+        "Pumpspeicher",
+        "Sonstige Erneuerbare",
+        "Sonstige Konventionelle",
+    ]
+    assert len(carbon_meta["fuels_with_resolution_qualifier"]) == 11
+
+
+def test_real_smard_unreported_fuel_and_dwd_products(tmp_path: Path) -> None:
+    carbon_root = _root(tmp_path, "real_c")
+    _seed(carbon_root, "generation_mix", "smard_real_c.csv")
+    api.canonicalise("generation_mix", root=carbon_root)
+    carbon = api.load("carbon", root=carbon_root)
+    assert (carbon["intensity_g_kwh"] == 1080).all()
+    assert api.meta("carbon", root=carbon_root)["fuels_unreported_entire_file"] == ["Kernenergie"]
+
+    weather_root = _root(tmp_path, "real_weather")
+    _seed(weather_root, "dwd_weather", "dwd_real_tu.zip", "dwd_real_ff.zip")
+    api.canonicalise("dwd_weather", root=weather_root)
+    weather = api.load("weather", root=weather_root)
+    first = weather[(weather["station_id"] == "03379") & (weather["t"] == pd.Timestamp("2025-03-17T00:00:00Z"))].iloc[0]
+    assert first["temp_c"] == pytest.approx(3.5)
+    assert first["wind_ms"] == pytest.approx(2.5)
+    assert weather["t"].dt.tz is not None
+    assert weather.loc[weather["station_id"] == "03379", "ghi_w_m2"].isna().all()
+    assert "03379" in api.meta("weather", root=weather_root)["stations_without_solar"]
+
+    solar = api._parse_dwd_weather_raw((FIXTURES / "dwd_real_st_2026.txt").read_bytes())
+    row = solar[solar["t"] == pd.Timestamp("2026-08-31T20:00:00Z")].iloc[0]
+    assert row["station_id"] == "01048"
