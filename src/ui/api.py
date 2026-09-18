@@ -464,15 +464,47 @@ def default_reduction_event(intervals: Any) -> dict[str, Any] | None:
     if len(rows) < 2:
         return None
 
-    call_row = max(rows[:-1], key=lambda r: r["price"])
-    call_index = rows.index(call_row)
-    last_t = rows[-1]["t"]
+    # The call must land where the reduction is worth the most AND where the following
+    # interval actually exists -- a highest-price row with nothing backing the interval
+    # after it cannot open a compliance window at all (issue #43 finding 3). Candidates
+    # are therefore rows with a row at exactly `t + NATIVE_INTERVAL_MIN`, which also
+    # subsumes the old "never the last row" rule: the last row has nothing after it.
+    _step = _dt.timedelta(minutes=NATIVE_INTERVAL_MIN)
+    _by_t = {r["t"]: r for r in rows}
+    candidates = [r for r in rows if r["t"] + _step in _by_t]
+    if not candidates:
+        return None
+    call_row = max(candidates, key=lambda r: r["price"])
+    # Issue #43 finding 3. The compliance window runs from `call_t + notice_min`, so it
+    # is backed by the intervals AFTER `call_t`. Deriving `duration_min` from the last
+    # recorded timestamp promises capacity across every interval in between, whether or
+    # not any of them exist: `timeseries.json`'s spacings are 15, 45, 60, 60, 60, 60 min,
+    # so the old event promised a 5-hour reduction backed by 7 rows where a complete
+    # 15-minute grid needs 21 -- 14 intervals of capacity sold with no data behind them.
+    # `src/market.bid()` already refuses to sell a block whose 15-minute grid is
+    # incomplete, and `src/fleet.to_load()` was fixed for emitting the sparse grid that
+    # made it refuse; this is the same defect class, at the one point in `src/ui` that
+    # promises capacity.
+    #
+    # Refusing outright would re-disable the button that issue #40 existed to revive, so
+    # the window is TRUNCATED to the part that is actually backed: the maximal run of
+    # consecutive `NATIVE_INTERVAL_MIN` intervals starting at `call_t + notice_min`. A
+    # short honest promise beats a long unbacked one, and the operator sees the resulting
+    # `duration_min` before pressing anything.
+    step = _step
+    by_t = _by_t
+    window: list[dict[str, Any]] = []
+    cursor = call_row["t"] + step
+    while cursor in by_t:
+        window.append(by_t[cursor])
+        cursor += step
+    if not window:
+        # Not one backed interval after this call -- there is no window to promise over.
+        return None
 
-    duration_min = (last_t - call_row["t"]).total_seconds() / 60.0
-    if not duration_min > 0:
-        return None  # unreachable: call_index < len(rows) - 1 and every t is unique/sorted
-
-    reduction_kw = min(r["firm_kw"] for r in rows[call_index + 1 :])
+    last_backed_t = window[-1]["t"]
+    duration_min = (last_backed_t - call_row["t"]).total_seconds() / 60.0
+    reduction_kw = min(r["firm_kw"] for r in window)
 
     return {
         "call_t": call_row["t_wire"],
@@ -544,6 +576,21 @@ def build_reduction_event_from_input(raw: Any) -> dict[str, Any]:
     return event
 
 
+def _utc_offset_is_nonzero(value: str) -> bool:
+    """True when `value` parses as a tz-aware timestamp whose OWN offset is not +00:00.
+
+    Deliberately reads the offset the string literally carries, before any conversion --
+    `_parse_utc_datetime()` returns an already-converted UTC datetime, whose offset is
+    zero by construction and so can never reveal what the wire actually said.
+    """
+    try:
+        parsed = _dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    offset = parsed.utcoffset()
+    return offset is not None and offset != _dt.timedelta(0)
+
+
 def reduction_event_valid(event: Any) -> bool:
     """True only when `event` is a `ReductionEvent` the service's dispatch validator
     will accept exactly as it stands.
@@ -562,7 +609,9 @@ def reduction_event_valid(event: Any) -> bool:
       - `event` carries exactly `REDUCTION_EVENT_KEYS` -- no more (an unrecognised field
         is itself a 400 on the wire, "unknown ReductionEvent field(s)") and no fewer;
       - `call_t` is a `str` that parses as a tz-aware timestamp -- naive is rejected,
-        matching `to_berlin`'s rule that the wire is always UTC;
+        matching `to_berlin`'s rule that the wire is always UTC, and so is a tz-aware
+        timestamp carrying a NON-ZERO offset (issue #43 finding 4): the service would
+        convert it silently, and an invisible coercion is what CONVENTIONS forbids;
       - `notice_min`, `duration_min`, `reduction_kw` are real, finite numbers -- never a
         `bool`, and never a numeric string ("60" is not accepted where 60 is required);
       - `notice_min >= 0`, `duration_min > 0`, `reduction_kw >= 0` -- the exact bounds
@@ -574,6 +623,17 @@ def reduction_event_valid(event: Any) -> bool:
         return False
     call_t = event.get("call_t")
     if not isinstance(call_t, str) or _parse_utc_datetime(call_t) is None:
+        return False
+    # Issue #43 finding 4. A tz-aware but non-UTC `call_t` ("...T22:00:00+02:00") parses
+    # fine and used to enable the button, and the raw string was then POSTed verbatim;
+    # `src/service` calls `tz_convert("UTC")` on it, so the computed answer was right but
+    # the conversion was invisible at both ends. `contracts/CONVENTIONS.md` requires a
+    # coercion to be observable and pinned at both ends, and this lane has deliberately
+    # chosen not to rewrite `call_t` (see `build_reduction_event_from_input`). So the
+    # offset is REJECTED rather than silently converted -- the same treatment a naive
+    # timestamp already gets, for the same reason: it is not the wire shape. The wire is
+    # always UTC, and the form shows and edits that same UTC string.
+    if _utc_offset_is_nonzero(call_t):
         return False
     notice_min = event.get("notice_min")
     duration_min = event.get("duration_min")
