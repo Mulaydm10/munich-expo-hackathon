@@ -37,9 +37,8 @@ from ._cache import FINGERPRINTED_TABLES
 from ._errors import BadSpec, MissingData, UpstreamUnavailable
 from ._spec import ScenarioSpec
 
-# Days of history synthesised before the scenario day so the forecast has its 168 h
-# lag/rolling features. 10 leaves ~3 complete training days after the 7-day warm-up.
-HISTORY_DAYS = 10
+# Maximum days of history synthesised before the scenario day.
+HISTORY_DAYS = 28
 
 LOCAL_TZ = "Europe/Berlin"
 
@@ -283,6 +282,18 @@ def _weather_area(weather: pd.DataFrame, warns: Warnings) -> pd.DataFrame:
     return out.sort_values("t").reset_index(drop=True)
 
 
+def _history_days(day_start: pd.Timestamp, requested_start: pd.Timestamp, *tables) -> int:
+    """Return complete history days available before `day_start` in canonical tables."""
+    starts = []
+    for table in tables:
+        if table is not None and len(table):
+            starts.append(pd.Timestamp(table["t"].min()))
+    if not starts:
+        return 0
+    available_start = max(starts)
+    return max(0, int((day_start - available_start).total_seconds() // 86400))
+
+
 # ---------------------------------------------------------------------------
 # the pipeline
 # ---------------------------------------------------------------------------
@@ -298,17 +309,39 @@ def build(spec: ScenarioSpec, *, root=None, progress=None) -> tuple[dict, LiveSc
     warns = Warnings()
     day = date.fromisoformat(spec.date)
     day_start, day_end = _day_bounds(day)
-    hist_start = pd.Timestamp(day - timedelta(days=HISTORY_DAYS), tz=LOCAL_TZ).tz_convert("UTC")
+    requested_hist_start = pd.Timestamp(
+        day - timedelta(days=HISTORY_DAYS), tz=LOCAL_TZ
+    ).tz_convert("UTC")
     day_index = _grid(day_start, day_end)
-    span_index = _grid(hist_start, day_end)
 
     # -- data ---------------------------------------------------------------
     step(0.05, "data:sites")
     sites = _select_sites(_load_required("sites", root), spec, warns)
 
     step(0.10, "data:tables")
-    prices = _load_required("prices", root, start=hist_start, end=day_end)
+    prices = _load_required("prices", root, start=requested_hist_start, end=day_end)
     data.require_columns(prices, ["t", "price_eur_mwh"])
+    try:
+        grid_load = data.load("grid_load", root=root, start=requested_hist_start, end=day_end)
+    except data.MissingTable:
+        grid_load = None
+    history_days = _history_days(day_start, requested_hist_start, prices, grid_load)
+    if history_days < 10:
+        raise MissingData(
+            f"only {history_days} days of history are available before the scenario day",
+            "build at least 10 days of `grid_load`/`prices` history before the scenario day",
+        )
+    if history_days < HISTORY_DAYS:
+        warns.add(
+            "history_truncated",
+            "src/service",
+            "the canonical grid-load/price tables start after the requested history window; "
+            "the forecast used the available history",
+            requested=int(HISTORY_DAYS),
+            used=int(history_days),
+        )
+    hist_start = day_start - pd.Timedelta(days=history_days)
+    span_index = _grid(hist_start, day_end)
     _require_full_grid(prices, span_index, "prices")
 
     weather_raw = _load_required("weather", root, start=hist_start, end=day_end)
@@ -345,7 +378,7 @@ def build(spec: ScenarioSpec, *, root=None, progress=None) -> tuple[dict, LiveSc
     else:
         sites_classified = classify(sites)
 
-    days = [day - timedelta(days=n) for n in range(HISTORY_DAYS, -1, -1)]
+    days = [day - timedelta(days=n) for n in range(history_days, -1, -1)]
     sessions = synthesise(sites_classified, weather, days, seed=spec.seed)
     _fleet_session_warnings(sessions, warns)
 
@@ -387,7 +420,9 @@ def build(spec: ScenarioSpec, *, root=None, progress=None) -> tuple[dict, LiveSc
 
     # -- forecast -----------------------------------------------------------
     step(0.50, "forecast:fit")
-    preds, calibration = _forecast(spec, base_load, weather, prices, day_start, day_end, warns)
+    preds, calibration, accuracy = _forecast(
+        spec, base_load, weather, prices, day_start, day_end, history_days, warns
+    )
 
     # -- market: firm capacity + pooling ------------------------------------
     step(0.70, "market:firm")
@@ -486,6 +521,7 @@ def build(spec: ScenarioSpec, *, root=None, progress=None) -> tuple[dict, LiveSc
         "totals": totals,
         "scorecard": scorecard,
         "calibration": calibration,
+        "forecast_accuracy": accuracy,
         "warnings": warns.as_list(),
     }
     doc = {
@@ -664,18 +700,20 @@ def _build_envelope(sites, spec, weather, base_load, day_index, day_start, warns
     return envelope, rate
 
 
-def _forecast(spec, base_load, weather, prices, day_start, day_end, warns):
-    features = forecast.make_features(base_load, weather, prices, horizon_h=36)
+def _forecast(spec, base_load, weather, prices, day_start, day_end, history_days, warns):
+    agg = forecast.aggregate_load(base_load)
+    features = forecast.make_features(agg, weather, prices, horizon_h=36)
     train = features[features["t"] < day_start]
     day_rows = features[(features["t"] >= day_start) & (features["t"] < day_end)]
     if train.empty or day_rows.empty:
         raise MissingData(
             "not enough history to fit a forecast for this scenario day",
-            f"the pipeline synthesises {HISTORY_DAYS} days of history; a shorter "
+            f"the pipeline synthesises up to {HISTORY_DAYS} days of history and used "
+            f"{history_days}; a shorter "
             "`weather`/`prices` window than that cannot support the 168 h lag features",
         )
-    model = forecast.fit(train, base_load, quantiles=forecast.QUANTILES, seed=spec.seed)
-    preds = model.predict(day_rows)
+    model = forecast.fit(train, agg, quantiles=forecast.QUANTILES, seed=spec.seed)
+    preds_p = model.predict(day_rows)
     warns.rate(
         "forecast_quantile_crossing",
         "src/forecast",
@@ -691,9 +729,7 @@ def _forecast(spec, base_load, weather, prices, day_start, day_end, warns):
         model.last_predict_fallback_rate,
     )
 
-    truth = day_rows[["t", "site_id"]].merge(
-        base_load[["t", "site_id", "load_kw"]], on=["t", "site_id"], how="left"
-    )
+    truth = day_rows[["t"]].merge(agg[["t", "load_kw"]], on="t", how="left")
     y = truth["load_kw"]
     usable = ~y.isna()
     if not usable.all():
@@ -706,14 +742,59 @@ def _forecast(spec, base_load, weather, prices, day_start, day_end, warns):
             dropped=int((~usable).sum()),
         )
     if not usable.any():
-        return preds, {}
-    curve = forecast.reliability_curve(
-        y[usable].to_numpy(dtype=float), preds.loc[usable.to_numpy()].reset_index(drop=True)
+        calibration = {}
+    else:
+        curve = forecast.reliability_curve(
+            y[usable].to_numpy(dtype=float),
+            preds_p.loc[usable.to_numpy()].reset_index(drop=True),
+        )
+        calibration = {
+            f"{row.tau_nominal:g}": _f(row.coverage_empirical)
+            for row in curve.itertuples(index=False)
+        }
+
+    history = agg[agg["t"] < day_start]
+    day_times = pd.DatetimeIndex(day_rows["t"])
+    y_values = y.to_numpy(dtype=float)
+    median_metrics = forecast.point_metrics(y_values, preds_p["q50"].to_numpy(dtype=float))
+    seasonal_values = forecast.seasonal_naive(history, day_times, days=7)
+    seasonal_metrics = forecast.point_metrics(y_values, seasonal_values)
+    recent = history[history["t"] >= day_start - pd.Timedelta(days=7)].copy()
+    recent["slot_15min"] = recent["t"].dt.hour * 4 + recent["t"].dt.minute // 15
+    day_slots = day_times.hour * 4 + day_times.minute // 15
+    climatology_by_slot = recent.groupby("slot_15min")["load_kw"].mean()
+    climatology_values = climatology_by_slot.reindex(day_slots).to_numpy(dtype=float)
+    climatology_metrics = forecast.point_metrics(y_values, climatology_values)
+    q05 = preds_p["q05"].to_numpy(dtype=float)
+    q95 = preds_p["q95"].to_numpy(dtype=float)
+    coverage_valid = ~np.isnan(y_values) & ~np.isnan(q05) & ~np.isnan(q95)
+    coverage_q05_q95 = (
+        float(np.mean((q05[coverage_valid] <= y_values[coverage_valid])
+                      & (y_values[coverage_valid] <= q95[coverage_valid])))
+        if coverage_valid.any()
+        else None
     )
-    calibration = {
-        f"{row.tau_nominal:g}": _f(row.coverage_empirical) for row in curve.itertuples(index=False)
+    wape = _f(median_metrics["wape"]) if median_metrics["n"] else None
+    accuracy = {
+        "level": "portfolio",
+        "history_days": int(history_days),
+        "mae_kw": _f(median_metrics["mae_kw"]) if median_metrics["n"] else None,
+        "wape": wape,
+        "accuracy_pct": (100.0 * (1.0 - wape)) if wape is not None else None,
+        "seasonal_naive_wape": (
+            _f(seasonal_metrics["wape"]) if seasonal_metrics["n"] else None
+        ),
+        "climatology_wape": (
+            _f(climatology_metrics["wape"]) if climatology_metrics["n"] else None
+        ),
+        "coverage_q05_q95": coverage_q05_q95,
+        "sharpness_kw": _f(forecast.sharpness(preds_p)),
     }
-    return preds, calibration
+    shares = forecast.site_shares(history)
+    preds = forecast.split_portfolio(preds_p, shares)
+    scenario_sites = set(base_load["site_id"].unique())
+    preds = preds[preds["site_id"].isin(scenario_sites)].reset_index(drop=True)
+    return preds, calibration, accuracy
 
 
 def _pooling(spec, firm, day_index, warns):

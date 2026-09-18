@@ -107,6 +107,16 @@ def test_a_missing_optional_table_nulls_its_figure_and_says_so(client_on, tmp_pa
     assert with_carbon["totals"]["peak_kw_baseline"] == without_carbon["totals"]["peak_kw_baseline"]
 
 
+def test_history_truncation_is_reported(client_on, tmp_path):
+    root = build_root(tmp_path / "short-history")
+    short_index = span_index(history_days=12)
+    write_table(root, "prices", prices_frame(short_index))
+    write_table(root, "weather", weather_frame(short_index))
+    result = warm(client_on(root), FEASIBLE)
+    warning = detail(result, "history_truncated")
+    assert warning == {"requested": 28, "used": 12}
+
+
 def test_a_missing_balancing_table_nulls_the_capacity_revenue(client_on, tmp_path):
     result = warm(client_on(build_root(tmp_path / "no-balancing", balancing=False)), FEASIBLE)
     assert result["totals"]["capacity_revenue_eur"] is None

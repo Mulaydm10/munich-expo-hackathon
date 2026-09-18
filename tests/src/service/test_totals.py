@@ -110,6 +110,25 @@ def test_calibration_covers_exactly_the_fitted_quantiles(client):
     assert all(0.0 <= value <= 1.0 for value in result["calibration"].values())
 
 
+def test_forecast_accuracy_reports_portfolio_metrics(client):
+    result = warm(client, FEASIBLE)
+    accuracy = result["forecast_accuracy"]
+    assert set(accuracy) == {
+        "level",
+        "history_days",
+        "mae_kw",
+        "wape",
+        "accuracy_pct",
+        "seasonal_naive_wape",
+        "climatology_wape",
+        "coverage_q05_q95",
+        "sharpness_kw",
+    }
+    assert accuracy["level"] == "portfolio"
+    assert accuracy["history_days"] == 28
+    assert 0.0 <= accuracy["wape"] <= 1.0
+
+
 def test_the_scorecard_is_sched_s_own_output(client):
     result = warm(client, FEASIBLE)
     assert set(result["scorecard"]) == {
