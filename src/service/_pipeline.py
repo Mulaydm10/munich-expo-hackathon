@@ -46,6 +46,8 @@ LOCAL_TZ = "Europe/Berlin"
 # Shadow price added to an interval already loaded to the baseline peak, EUR/MWh;
 # ASSUMED, order of the intra-day EPEX spread.
 SHADOW_EUR_MWH_AT_BASELINE_PEAK = 100.0
+# Convex so loading an interval near the portfolio peak costs far more than filling a valley.
+SHADOW_EXPONENT = 3
 
 # The canonical tables named in contracts/src/data.md. Listed here (rather than read
 # from src/data, whose SOURCES map only covers wired sources) so /api/health can show a
@@ -985,8 +987,11 @@ def _schedule(
                 shadow_prices["price_eur_mwh"] = (
                     shadow_prices["price_eur_mwh"].to_numpy(dtype=float)
                     + SHADOW_EUR_MWH_AT_BASELINE_PEAK
-                    * agg.reindex(shadow_prices["t"]).fillna(0.0).to_numpy(dtype=float)
-                    / peak_base
+                    * (
+                        agg.reindex(shadow_prices["t"]).fillna(0.0).to_numpy(dtype=float)
+                        / peak_base
+                    )
+                    ** SHADOW_EXPONENT
                 )
             frame, site_sessions, error = _solve_site(site_id, shadow_prices)
             if frame is None:
@@ -1016,34 +1021,52 @@ def _schedule(
     )
     peaks = [float(aggregate.max()) if len(aggregate) else 0.0]
     chosen_sweep = 0
+    selected_frames = frames
+    selected_kept_sessions = kept_sessions
+    selected_infeasible = infeasible
     if peak_base > 0.0:
-        (
-            candidate_frames,
-            candidate_sessions,
-            candidate_infeasible,
-            candidate_aggregate,
-        ) = _solve_sweep(
-            order, aggregate, previous_frames=frames
-        )
-        candidate_peak = float(candidate_aggregate.max()) if len(candidate_aggregate) else 0.0
-        peaks.append(candidate_peak)
-        if candidate_peak < peaks[chosen_sweep]:
-            frames, kept_sessions, infeasible = (
+        for sweep in range(1, 3):
+            (
                 candidate_frames,
                 candidate_sessions,
                 candidate_infeasible,
+                candidate_aggregate,
+            ) = _solve_sweep(
+                order, aggregate, previous_frames=frames
             )
-            chosen_sweep = 1
+            candidate_peak = (
+                float(candidate_aggregate.max()) if len(candidate_aggregate) else 0.0
+            )
+            peaks.append(candidate_peak)
+            if candidate_peak < peaks[chosen_sweep]:
+                selected_frames, selected_kept_sessions, selected_infeasible = (
+                    candidate_frames,
+                    candidate_sessions,
+                    candidate_infeasible,
+                )
+                chosen_sweep = sweep
+            frames, kept_sessions, infeasible, aggregate = (
+                candidate_frames,
+                candidate_sessions,
+                candidate_infeasible,
+                candidate_aggregate,
+            )
+        frames, kept_sessions, infeasible = (
+            selected_frames,
+            selected_kept_sessions,
+            selected_infeasible,
+        )
         warns.add(
             "portfolio_coordination",
             "src/service",
             "sites are scheduled independently, so the per-site LPs were re-solved "
             "sequentially with a shadow price on the running portfolio load; the sweep "
             "with the lowest portfolio peak was kept",
-            sweeps=2,
+            sweeps=3,
             chosen_sweep=chosen_sweep,
             peak_kw_by_sweep=peaks,
             shadow_eur_mwh_at_baseline_peak=SHADOW_EUR_MWH_AT_BASELINE_PEAK,
+            shadow_exponent=SHADOW_EXPONENT,
             includes_residual=True,
         )
 

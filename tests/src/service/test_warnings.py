@@ -314,9 +314,10 @@ def test_portfolio_coordination_reports_its_iterates(client):
     result = warm(client, FEASIBLE)
     reported = detail(result, "portfolio_coordination")
 
-    assert reported["sweeps"] == 2
-    assert len(reported["peak_kw_by_sweep"]) == 2
-    assert reported["chosen_sweep"] in range(2)
+    assert reported["sweeps"] == 3
+    assert len(reported["peak_kw_by_sweep"]) == 3
+    assert reported["chosen_sweep"] in range(3)
+    assert reported["shadow_exponent"] == 3
 
 
 def test_portfolio_coordination_keeps_the_lowest_peak_iterate(client):
