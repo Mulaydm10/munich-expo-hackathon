@@ -790,7 +790,8 @@ def _forecast(spec, base_load, weather, prices, day_start, day_end, history_days
         "coverage_q05_q95": coverage_q05_q95,
         "sharpness_kw": _f(forecast.sharpness(preds_p)),
     }
-    shares = forecast.site_shares(history)
+    site_history = base_load[base_load["t"] < day_start]
+    shares = forecast.site_shares(site_history)
     preds = forecast.split_portfolio(preds_p, shares)
     scenario_sites = set(base_load["site_id"].unique())
     preds = preds[preds["site_id"].isin(scenario_sites)].reset_index(drop=True)

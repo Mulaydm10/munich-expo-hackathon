@@ -22,6 +22,7 @@ from .conftest import (
     WITH_INFEASIBLE_SITE,
     build_root,
     day_index,
+    prices_frame,
     warm,
     weather_frame,
     span_index,
