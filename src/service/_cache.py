@@ -8,6 +8,7 @@ re-runs a model.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import threading
@@ -17,6 +18,8 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+
+from src.data import api as data
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -38,6 +41,65 @@ def cache_dir(root: Path | None = None) -> Path:
 
 def cache_path(scenario_id: str, root: Path | None = None) -> Path:
     return cache_dir(root) / f"{scenario_id}.json"
+
+
+# ---------------------------------------------------------------------------
+# input identity (issue #48.1)
+# ---------------------------------------------------------------------------
+
+# Every canonical table, deliberately a SUPERSET of the five `pipeline.build` reads
+# today (`grid_load` is in the inventory but not currently loaded by a scenario).
+# Fingerprinting it means a `grid_load` rebuild invalidates scenarios whose numbers
+# could not have changed -- a real cost, accepted knowingly, because the two failure
+# directions are not symmetric: over-invalidating is a slow correct answer, and
+# under-invalidating is a fast wrong one with no signal, which is the entire defect
+# this module is fixing. Keeping one tuple shared with `_pipeline.CANONICAL_TABLES`
+# also means a lane that starts reading a table cannot forget to fingerprint it.
+FINGERPRINTED_TABLES = ("sites", "grid_load", "prices", "weather", "balancing", "carbon")
+
+# Top-level key holding the fingerprint of the inputs a cached document was computed
+# from. Deliberately outside `doc["result"]`: it is provenance about the document, not
+# part of the contract's result shape (`ScenarioResult.from_doc` reads only `result`).
+INPUTS_KEY = "inputs_fingerprint"
+
+
+def inputs_fingerprint(root: Path | None = None) -> str:
+    """Short hash of the *identity* of every canonical table a scenario can read.
+
+    `ScenarioSpec.id` hashes the request and nothing else, so it is unchanged when the
+    tables underneath change -- which is exactly what wiring real data does. Without
+    this, every scenario cached during the synthetic era stays warm and keeps serving
+    pre-real numbers with no signal that anything moved (issue #48.1).
+
+    Identity comes from each table's provenance sidecar (`src.data.meta`: source url,
+    licence, `retrieved_at`, row count, resolution, and the raw file's sha256 where the
+    canonicaliser records one), not from the parquet bytes -- reading six sidecars is
+    cheap enough to do on every cache hit, and re-running `canonicalise()` against
+    unchanged raw files is a no-op on provenance, so an unchanged table keeps its
+    fingerprint.
+
+    An absent table is part of the identity too (recorded as `None`): "no `carbon`
+    table" and "a `carbon` table" are different worlds and must not share an answer.
+    An unreadable sidecar is recorded as its error rather than swallowed -- the one
+    thing this must never do is read as "same inputs" when it does not know.
+    """
+    resolved = Path(root) if root is not None else data_root()
+    identity: dict[str, object] = {}
+    for table in FINGERPRINTED_TABLES:
+        try:
+            identity[table] = data.meta(table, root=resolved)
+        except data.MissingTable:
+            identity[table] = None
+        except (OSError, ValueError) as exc:  # unreadable/corrupt sidecar
+            # Deliberately unique per call. Collapsing this to the exception class
+            # would give two *different* unknown states one identity, so a document
+            # written while a sidecar was corrupt would validate later while it was
+            # still corrupt -- asserting validity exactly where provenance is unknown.
+            # A never-equal value turns caching off for as long as the sidecar cannot
+            # be read, which is the safe direction: every read misses and recomputes.
+            identity[table] = f"unreadable:{type(exc).__name__}:{uuid.uuid4().hex}"
+    blob = json.dumps(identity, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 
 
 def jsonable(obj):
@@ -74,20 +136,57 @@ def dumps(doc: dict) -> str:
     return json.dumps(jsonable(doc), sort_keys=True, indent=2, allow_nan=False) + "\n"
 
 
-def write(scenario_id: str, doc: dict, root: Path | None = None) -> Path:
+def write(
+    scenario_id: str,
+    doc: dict,
+    root: Path | None = None,
+    *,
+    expect_fingerprint: str | None = None,
+) -> Path | None:
+    """Stamps the inputs' fingerprint into the document as it is written, so a cached
+    scenario always states which tables it was computed from (issue #48.1). The
+    caller's dict is not mutated.
+
+    `expect_fingerprint` is the identity the caller *read its inputs under*, captured
+    before the pipeline ran. If the tables have moved since, this writes nothing and
+    returns `None`: the document holds numbers from the previous generation, and
+    stamping it with the current identity would mint exactly the lie this module
+    exists to prevent -- a document that validates forever and was never computed from
+    what it claims. Caching nothing is the safe outcome; the caller still has its
+    result, it simply does not become the answer every later request is given.
+    """
+    if expect_fingerprint is not None and inputs_fingerprint(root) != expect_fingerprint:
+        return None
     path = cache_path(scenario_id, root)
     path.parent.mkdir(parents=True, exist_ok=True)
+    stamped = {**doc, INPUTS_KEY: inputs_fingerprint(root)}
     tmp = path.with_suffix(f".{uuid.uuid4().hex}.tmp")
-    tmp.write_text(dumps(doc), encoding="utf-8")
+    tmp.write_text(dumps(stamped), encoding="utf-8")
     os.replace(tmp, path)  # atomic: a reader never sees a half-written scenario
     return path
 
 
-def read(scenario_id: str, root: Path | None = None) -> dict | None:
+def read(scenario_id: str, root: Path | None = None, *, verify_inputs: bool = True) -> dict | None:
+    """The cached document, or `None` if there is none *that is still valid*.
+
+    A document whose stored fingerprint does not match the inputs on disk right now is
+    reported as a miss rather than served: the numbers in it were computed from
+    different tables, and the caller's own recompute path is the only thing that can
+    produce an answer for the tables that are actually there. A document written before
+    this key existed carries no fingerprint and is therefore also a miss -- it was
+    computed against inputs nobody recorded, which is precisely the state this guards.
+
+    `verify_inputs=False` is for the read-back immediately after `write`, where the
+    fingerprint was just stamped by this process and re-deriving it would only open a
+    window for a race to turn a fresh write into a miss.
+    """
     path = cache_path(scenario_id, root)
     if not path.exists():
         return None
-    return json.loads(path.read_text(encoding="utf-8"))
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    if verify_inputs and doc.get(INPUTS_KEY) != inputs_fingerprint(root):
+        return None
+    return doc
 
 
 # ---------------------------------------------------------------------------
@@ -153,8 +252,23 @@ class JobRegistry:
 
         def run() -> None:
             try:
+                # captured before the pipeline reads a single table, so a rebuild
+                # landing mid-run is caught rather than stamped over (PR #61 review)
+                expected = inputs_fingerprint(root)
                 doc = target(progress)
-                write(scenario_id, doc, root)
+                if write(scenario_id, doc, root, expect_fingerprint=expected) is None:
+                    job.error = {
+                        "error": "inputs_changed_during_run",
+                        "detail": (
+                            "a canonical table was rebuilt while this scenario was "
+                            "being computed, so its numbers come from tables that are "
+                            "no longer on disk; nothing was cached"
+                        ),
+                        "how_to_fix": "POST the same spec again to run it against the current tables",
+                    }
+                    job.error_status = 409
+                    job.status = "failed"
+                    return
                 job.progress, job.stage, job.status = 1.0, "done", "done"
             except BaseException as exc:  # noqa: BLE001 - recorded, then re-raised to the poller
                 from ._errors import ServiceError

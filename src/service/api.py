@@ -113,12 +113,33 @@ def run_scenario(spec: ScenarioSpec, *, root=None, progress=None) -> ScenarioRes
     root = Path(root) if root is not None else cache.data_root()
     doc = cache.read(spec.id, root)
     if doc is None:
+        # captured before the pipeline reads a table: a rebuild landing during the
+        # build must not be stamped onto numbers computed from the previous one
+        expected = cache.inputs_fingerprint(root)
         built, live = pipeline.build(spec, root=root, progress=progress)
-        cache.write(spec.id, built, root)
         _LIVE[spec.id] = live
+        if cache.write(spec.id, built, root, expect_fingerprint=expected) is None:
+            # The result is still returned -- the caller asked for it and it is the
+            # only answer we have -- but it is not cached, and it says so rather than
+            # being quietly the same as a result that was.
+            built["result"]["warnings"].append(
+                {
+                    "code": "inputs_changed_during_build",
+                    "lane": "src/service",
+                    "message": (
+                        "a canonical table was rebuilt while this scenario was being "
+                        "computed; the result was not cached and may mix two generations "
+                        "of input data"
+                    ),
+                    "detail": {},
+                }
+            )
+            return ScenarioResult.from_doc(built)
         # read back rather than returning `built`: the object handed to a caller is then
-        # exactly what every route will serve, byte for byte.
-        doc = cache.read(spec.id, root)
+        # exactly what every route will serve, byte for byte. `verify_inputs=False`
+        # because this process stamped the fingerprint a line ago -- re-deriving it here
+        # would only let a table changing mid-request turn a fresh write into a miss.
+        doc = cache.read(spec.id, root, verify_inputs=False)
     return ScenarioResult.from_doc(doc)
 
 
