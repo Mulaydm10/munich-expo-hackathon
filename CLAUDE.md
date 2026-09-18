@@ -12,13 +12,14 @@ competition (no leaderboard) and **not** open-ended research.
 
 ## Read order (cold start)
 1. `CLAUDE.md` (this file) — or `AGENTS.md` if you're not Claude Code
-2. `STATE.md` — live snapshot, most-current-truth
-3. `VISION.md` — the thesis
-4. `COMPETITION.md` — event facts (two are contradicted between official sources; read the caveats)
-5. `GOVERNANCE.md` — who may edit what
-6. `AGENTS.md` — multi-agent concurrency model
-7. `worklog.md` (tail) — recent history
-8. `experiments/experiment_log.md` — recent experiments
+2. `docs/HANDOFF.md` — vendor-neutral takeover brief: what is built, what is not, agreed order of work
+3. `STATE.md` — live snapshot, most-current-truth
+4. `VISION.md` — the thesis
+5. `COMPETITION.md` — event facts (one is contradicted between official sources; read the caveats)
+6. `GOVERNANCE.md` — who may edit what
+7. `AGENTS.md` — multi-agent concurrency model
+8. `worklog.md` (tail) — recent history
+9. `experiments/experiment_log.md` — recent experiments
 
 If you are a **worker** (bus lane task): the above is background. `AGENTS.md`, `docs/STATE.md`,
 `contracts/CONVENTIONS.md` and `contracts/src/<your lane>.md` are the operative documents, and your
