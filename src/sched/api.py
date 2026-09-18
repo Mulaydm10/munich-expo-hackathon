@@ -862,6 +862,7 @@ def evaluate(
     delivered = sched.groupby("session_id")["valid_row_energy_kwh"].sum()
     due = sessions.set_index("session_id")["energy_kwh"]
     unmet_per_session = (due - delivered.reindex(due.index).fillna(0.0)).clip(lower=0.0)
+    unmet_per_session = unmet_per_session.where(unmet_per_session > _TOL, 0.0)
     unmet_kwh = float(unmet_per_session.sum())
     deadline_misses = int((unmet_per_session > _TOL).sum())
 
