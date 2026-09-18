@@ -1081,7 +1081,7 @@ def _schedule(
 
     frames = [frames[site_id] for site_id in order if site_id in frames]
     kept_sessions = [kept_sessions[site_id] for site_id in order if site_id in kept_sessions]
-    unscheduled = [site_id for site_id, _ in infeasible]
+    unscheduled = list(infeasible)
     if infeasible:
         fallback_load = baseline_day[baseline_day["site_id"].isin(unscheduled)]
         warns.add(
@@ -1093,7 +1093,7 @@ def _schedule(
             rate=float(len(infeasible) / len(site_ids)) if site_ids else 0.0,
             sites=unscheduled,
             baseline_energy_kwh=_f(_energy_kwh(fallback_load)),
-            binding={site_id: message for site_id, message in infeasible},
+            binding=dict(infeasible),
         )
 
     if not frames:
