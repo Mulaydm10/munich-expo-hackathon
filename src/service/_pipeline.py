@@ -826,17 +826,26 @@ def _clamp_sessions_to_grid(
     if len(grid) >= 2:
         gaps = grid.to_series().diff().shift(-1)
         gaps.iloc[-1] = gaps.iloc[-2]
-        dt_h = float((gaps.dt.total_seconds() / 3600.0).median())
+        dt_by_t = gaps.dt.total_seconds() / 3600.0
     else:
-        dt_h = 0.0
+        dt_by_t = pd.Series(0.25, index=grid)
     sessions_for_schedule = sessions_day.copy()
     clamped_count = 0
     clamped_kwh = 0.0
     dropped_sessions = 0
     keep = []
     for row in sessions_for_schedule.itertuples():
-        n_points = int(((grid >= row.t_arrive) & (grid < row.t_depart)).sum())
-        deliverable = float(row.max_power_kw) * n_points * dt_h
+        deliverable = 0.0
+        for t in grid:
+            dt_h = float(dt_by_t.loc[t])
+            interval_end = t + pd.Timedelta(dt_h, unit="h")
+            overlap_h = max(
+                0.0,
+                (
+                    min(row.t_depart, interval_end) - max(row.t_arrive, t)
+                ).total_seconds() / 3600.0,
+            )
+            deliverable += float(row.max_power_kw) * overlap_h
         if deliverable <= 0.0:
             dropped_sessions += 1
             keep.append(False)
@@ -852,9 +861,9 @@ def _clamp_sessions_to_grid(
             "session_energy_clamped_to_grid",
             "src/service",
             "sessions whose energy_kwh exceeds what max_power_kw can deliver over the "
-            "15-min grid points inside their dwell were clamped to that amount before "
+            "grid intervals overlapping their dwell were clamped to that amount before "
             "scheduling (the remainder is a partial-interval remnant the grid cannot "
-            "represent); sessions with no grid point inside their dwell were left unscheduled",
+            "represent); sessions with no overlap with the day grid were left unscheduled",
             count=int(clamped_count),
             clamped_kwh=float(clamped_kwh),
             dropped_sessions=int(dropped_sessions),
