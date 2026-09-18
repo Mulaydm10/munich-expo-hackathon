@@ -165,8 +165,9 @@ def test_a_partial_call_reports_its_measured_shortfall_and_a_zero_call_is_not(cl
         f"/api/scenario/{result['id']}/dispatch", json=an_event(call_t, reduction_kw=5.0)
     ).json()
     delivered = called["delivered_reduction_kw_worst_interval"]
-    assert 0.0 <= delivered <= 5.0
+    assert delivered > 0.0
     assert called["shortfall_kw"] == pytest.approx(5.0 - delivered)
+    # sched's figure is a per-site minimum, the service's a portfolio sum; they need not agree.
     assert called["sched_reduction_kw_achieved"] >= 0.0
     assert ("dispatch_under_delivered" in [w["code"] for w in called["warnings"]]) == (
         called["shortfall_kw"] > 1e-6
@@ -193,7 +194,12 @@ def test_the_unscheduled_sites_appear_in_the_rows_but_not_in_the_measurement(cli
     assert committed[at_peak] > scheduled.max(), (
         "the committed curve is missing the unscheduled sites' load"
     )
-    assert all(isinstance(row["reduction_kw"], (int, float)) for row in body["rows"])
+    window_start = pd.Timestamp(body["compliance_window"]["start"])
+    window_end = window_start + pd.Timedelta(minutes=body["event"]["duration_min"])
+    for row in body["rows"]:
+        row_t = pd.Timestamp(row["t"])
+        if window_start <= row_t < window_end:
+            assert row["reduction_kw"] >= -1e-9
 
 
 # ---------------------------------------------------------------------------
