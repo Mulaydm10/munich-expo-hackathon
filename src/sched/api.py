@@ -440,7 +440,7 @@ def _solve_lp(
             # docstring's "no numerical-clip coercion metric" note / issue #27 finding 9).
             raise RuntimeError(
                 f"src.sched: LP returned power_kw={raw:.6f} for session {sid!r} at t={t}, "
-            f"outside its [0, {hi}] bound by more than solver noise -- solver bug or "
+                f"outside its [0, {hi}] bound by more than solver noise -- solver bug or "
                 f"numerical failure, not something to clip past."
             )
         records.append((t, sid, raw))
