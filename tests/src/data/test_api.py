@@ -14,7 +14,7 @@ import csv
 import io
 import random
 import shutil
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 import pandas as pd
@@ -264,16 +264,22 @@ def test_fetch_raises_not_implemented_for_unwired_source_name(tmp_path: Path) ->
         api.fetch("balancing", start=date(2026, 1, 1), end=date(2026, 1, 2), root=tmp_path)
 
 
-def test_fetch_raises_not_implemented_for_date_partitioned_sources_too(tmp_path: Path) -> None:
-    # smard_load IS in SOURCES (canonicalise/load work against raw files) but
-    # fetch() itself is not wired for it: real fetch needs per-date-range
-    # download logic this issue does not build/verify against a live SMARD
-    # endpoint. Silently downloading SOURCES[...].url as a single file would
-    # just save the download-center HTML page, not real per-partition data.
-    from datetime import date
+def test_real_sources_are_fetch_wired() -> None:
+    assert api._FETCH_WIRED == {
+        "charge_points",
+        "smard_load",
+        "epex_day_ahead",
+        "generation_mix",
+        "dwd_weather",
+    }
 
-    with pytest.raises(NotImplementedError, match="date-partitioned"):
-        api.fetch("smard_load", start=date(2026, 1, 1), end=date(2026, 1, 2), root=tmp_path)
+
+def test_smard_exclusive_end_timestamp_is_next_local_midnight() -> None:
+    assert api._smard_timestamp_ms(
+        date(2026, 8, 31), exclusive_end=True
+    ) == api._smard_timestamp_ms(
+        date(2026, 9, 1)
+    )
 
 
 def test_canonicalise_raises_not_implemented_for_unwired_source_name(tmp_path: Path) -> None:
