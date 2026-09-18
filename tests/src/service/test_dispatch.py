@@ -159,7 +159,7 @@ def test_delivered_is_measured_from_the_schedules_even_when_sched_claims_otherwi
 def test_a_partial_call_reports_its_measured_shortfall_and_a_zero_call_is_not(client):
     """The real `src.sched.dispatch` measurement remains visible when a call is partial."""
     result = warm(client, FEASIBLE)
-    call_t = scheduled_load(result["id"]).idxmax().isoformat()
+    call_t = day_index()[44].isoformat()
 
     called = client.post(
         f"/api/scenario/{result['id']}/dispatch", json=an_event(call_t, reduction_kw=5.0)

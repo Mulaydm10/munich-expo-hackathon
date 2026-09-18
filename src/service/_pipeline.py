@@ -851,7 +851,7 @@ def _clamp_sessions_to_grid(
             keep.append(False)
         else:
             keep.append(True)
-            if row.energy_kwh > deliverable + 1e-9:
+        if row.energy_kwh > deliverable + 1e-8:
                 clamped_count += 1
                 clamped_kwh += float(row.energy_kwh - deliverable)
                 sessions_for_schedule.at[row.Index, "energy_kwh"] = deliverable
