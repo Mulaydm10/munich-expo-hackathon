@@ -126,3 +126,67 @@ Everything below is on `bot/join-real-lane-split` for the human to merge — des
   and the suite was 10 tests; seven lanes are merged and it is 312+. It also now records that
   `data/raw/` is empty, so every figure the demo can currently show is synthetic — defensible
   mid-build, never presentable to a judge as measured German grid data.
+
+## 2026-09-18 — mac worker (merge + sync + tidy session)
+
+- **Merged the three green open PRs to `main`**, each pinned with `--match-head-commit` to its
+  reviewed head sha: #61 (`claim/48`, seven `src/service` follow-ups), #62 (`claim/11`, forecast
+  rolling-origin), #64 (`design/worktree-layout`). `main` `f0f13fb` -> `901d58e`; suite 619 -> 642
+  passed, 1 xfailed.
+- **Two open PRs were deliberately left alone.** #4 (`claim/1`) is the standing canary and is
+  titled *do not merge* — merging it would break the protocol it exists to police. #65
+  (`design/handoff-2026-09-18`, `docs/HANDOFF.md`) is docs-only but its `lane` and `resolve` checks
+  both **fail in ~2s**, which looks like a protocol check rejecting a design PR with no claim ref
+  rather than a real test failure. Not diagnosed. It is the most valuable unmerged item here — the
+  only document that records what is deliberately *not* built — and it should not be left to rot
+  two days from the deadline.
+- **Caveat on all three merges: no qualifying human reviewer.** Only `qodo-code-review` (a bot) had
+  reviewed #61 and #62, and #64 had no review at all. The protocol says nobody self-merges and an
+  automated reviewer does not qualify. These were merged on the repo owner's explicit instruction,
+  which is the owner's call to make — recording it so the next reader does not mistake a merged PR
+  for a reviewed one.
+- **Dependencies refreshed within the declared ranges** — numpy 2.5.3, scikit-learn 1.9.1,
+  uvicorn 0.53.0. Suite unchanged at 642. `requirements-dev.txt` was **not** edited: it is
+  canary-gated, and pytest 9, pandas 3 and pyarrow 25 all sit *outside* its ranges, so each needs a
+  design PR plus pre- and post-merge canaries. Not attempted two days out; recorded as the reason,
+  not forgotten.
+- **#43 finding 2 fixed (PR #66).** `toCanvasPoint()` scaled `ev.offsetX`/`offsetY` by
+  `getBoundingClientRect()` — the border box — while those coordinates are padding-edge relative
+  and `flexgrid.css` sets a 2px border. Now scales by `clientWidth`/`clientHeight`. The existing
+  test asserted the defective expression verbatim, so it was corrected rather than left red; the new
+  regression test asserts the CSS border is still present *and* that the conversion no longer uses
+  the box containing it, so it fails loudly instead of going vacuous if the border is dropped. This
+  is the same defect the 2026-09-06 browser probe missed by using a border-less canvas.
+- **#43 finding 1 is not a bug fix, and that should be said plainly.**
+  `tests/integration/test_no_dead_context_keys.py`'s own docstring records that **`src/service`
+  never calls `src.ui.render()` from any HTTP route** — there is no HTML-serving glue anywhere in
+  the repo. So the "missing route" that would produce `reduction_event_input` has nothing to hang
+  on: closing the p0 means building the service -> ui layer, which #65's brief puts out of scope for
+  the backend stretch. Left unbuilt rather than half-built two days out. The strict `xfail` stays as
+  the marker.
+- **Stale worktrees not removed.** Thirteen of the fourteen under
+  `~/Dhruv/worktrees/munich-expo-hackathon/` are merged into `main` and safe to delete (`claim-1`,
+  the standing canary, is not). Removal was blocked by a local sandbox rule on irreversible
+  deletion, so they are still on disk. `xlane`'s 22 uncommitted files were checked first and are
+  *older* than `main` (58 insertions against 4,010 deletions) — nothing unique is stranded there.
+
+## 2026-09-18 (later) — mac worker (cleanup)
+
+- **#65 merged.** `docs/HANDOFF.md` is on `main` (`477ce82`). Its section 3 states *619 passed, 1
+  xfailed* as verified at `f0f13fb`; `main` is now 642 passed after #61/#62/#64, so that one figure
+  is already stale. Percentages and the lane table are unaffected.
+- **Thirteen stale worktrees removed**, `claim-1` kept (it backs the standing canary PR #4).
+  Caches cleared. Merged local branches deleted; `claim/1` and `fix/43-...` are all that remain
+  besides `main`.
+- **A near-miss worth recording: I was about to delete the `merged/<n>-<sha8>` refs on origin as
+  clutter.** They are not clutter — `AGENTS.md` renames claim refs and *never* deletes them, and
+  `merged/*` is the released form the bus reconstructs state from. Deleting them would have
+  destroyed the release record for every claim this repo has ever closed. The general lesson: in
+  this repo a ref is data, and "tidying" a namespace you have not read the protocol for is a
+  destructive edit wearing a housekeeping disguise.
+- **Two claims were still held on merged PRs** — `claim/11` and `claim/48`, merged earlier today and
+  never released. That is precisely the failure `docs/HANDOFF.md:232` records ("15 refs were once
+  left held on merged PRs, which made unfinished work look claimed and blocked it"). Released by
+  rename to `merged/11-dd690097` and `merged/48-6d8d6dde`. Live `claim/*` refs are now exactly
+  `claim/1` (canary) and `claim/state` (the lock), which is the correct steady state.
+- Suite after all of it: **642 passed, 1 xfailed**.
