@@ -830,6 +830,12 @@ def _schedule(spec, sessions_day, envelope, prices_day, baseline_day, warns):
         "commitment.",
         commitments=0,
     )
+    warns.add(
+        "demand_charge_applied",
+        "src/service",
+        "the optimised schedule minimises energy cost plus a demand charge on each site's daily peak (src.sched.DEMAND_CHARGE_EUR_PER_KW_DAY); source is ASSUMED, see src/sched",
+        eur_per_kw_day=float(sched.DEMAND_CHARGE_EUR_PER_KW_DAY),
+    )
     site_ids = sorted(str(s) for s in pd.Series(envelope["site_id"]).unique())
     frames, kept_sessions, infeasible = [], [], []
     for site_id in site_ids:
@@ -840,7 +846,12 @@ def _schedule(spec, sessions_day, envelope, prices_day, baseline_day, warns):
         try:
             frames.append(
                 sched.schedule(
-                    site_sessions, site_envelope, prices_day, commitments=(), solver="lp"
+                    site_sessions,
+                    site_envelope,
+                    prices_day,
+                    commitments=(),
+                    solver="lp",
+                    peak_price_eur_per_kw=sched.DEMAND_CHARGE_EUR_PER_KW_DAY,
                 )
             )
         except sched.Infeasible as exc:
@@ -882,6 +893,7 @@ def _schedule(spec, sessions_day, envelope, prices_day, baseline_day, warns):
         prices=prices_day,
         commitments=(),
         solver="lp",
+        peak_price_eur_per_kw=float(sched.DEMAND_CHARGE_EUR_PER_KW_DAY),
     )
     scorecard = sched.evaluate(optimised, scheduled_sessions, scheduled_envelope, prices_day, ())
     scorecard = {k: _f(v) if isinstance(v, (int, float, np.generic)) else v

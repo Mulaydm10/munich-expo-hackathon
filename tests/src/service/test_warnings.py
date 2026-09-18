@@ -321,6 +321,8 @@ def test_the_caveats_that_always_apply_say_which_figure_is_null(client):
 
     assert "commitments_not_applied" in codes(result)
     assert detail(result, "commitments_not_applied")["commitments"] == 0
+    assert "demand_charge_applied" in codes(result)
+    assert detail(result, "demand_charge_applied")["eur_per_kw_day"] > 0.0
 
 
 def _null_reason_present(warnings, function_name, failed_code):
