@@ -376,7 +376,12 @@ def _solve_lp(
     A_eq = np.zeros((len(session_order), n_variables))
     b_eq = np.zeros(len(session_order))
     for r, sid in enumerate(session_order):
-        b_eq[r] = problem.energy_due[sid]
+        # Pin saturated targets to deliverable energy to avoid floating-point knife-edges.
+        available = sum(
+            problem.cap_kw[sid][t] * float(problem.dt.loc[t])
+            for t in problem.windows[sid]
+        )
+        b_eq[r] = min(problem.energy_due[sid], available)
         for t in problem.windows[sid]:
             A_eq[r, var_index[(sid, t)]] = float(problem.dt.loc[t])
 
@@ -500,7 +505,14 @@ def _solve_site_greedy(
     """
     problem.check_deadline_feasibility()
 
-    remaining_energy = dict(problem.energy_due)
+    # Pin saturated targets to deliverable energy to avoid floating-point knife-edges.
+    remaining_energy = {
+        sid: min(
+            problem.energy_due[sid],
+            sum(problem.cap_kw[sid][t] * float(problem.dt.loc[t]) for t in window),
+        )
+        for sid, window in problem.windows.items()
+    }
     assigned: dict[tuple[str, pd.Timestamp], float] = {}
     cap_used: dict[pd.Timestamp, float] = {t: 0.0 for t in problem.times}
     window_pos = {

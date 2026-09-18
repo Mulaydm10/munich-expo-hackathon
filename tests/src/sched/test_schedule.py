@@ -59,6 +59,30 @@ def test_deadline_feasibility_including_tight_dwell():
     assert result["deadline_misses"] == 0
 
 
+def test_saturated_fractional_dwell_is_robust_to_float_rounding():
+    arrive = pd.Timestamp("2026-01-10T08:50:07.123", tz="UTC")
+    depart = pd.Timestamp("2026-01-10T09:11:59.877", tz="UTC")
+    sessions = mk_sessions([
+        dict(
+            session_id="SAT",
+            site_id="S1",
+            t_arrive=arrive,
+            t_depart=depart,
+            energy_kwh=75.0 * (depart - arrive).total_seconds() / 3600.0,
+            max_power_kw=75.0,
+        ),
+    ])
+    times = pd.date_range("2026-01-10T08:45", periods=3, freq="15min", tz="UTC")
+    envelope = mk_envelope("S1", times, 100.0)
+    prices = mk_prices(times, 50.0)
+
+    sched = api.schedule(sessions, envelope, prices)
+
+    assert sched["power_kw"].sum() * 0.25 == pytest.approx(
+        sessions["energy_kwh"].iloc[0], abs=1e-6
+    )
+
+
 def test_deadline_infeasible_raises_naming_deadline():
     times = grid("2026-01-10T00:00", 8)
     sessions = mk_sessions([
