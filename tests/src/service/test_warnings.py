@@ -325,6 +325,23 @@ def test_the_caveats_that_always_apply_say_which_figure_is_null(client):
     assert detail(result, "demand_charge_applied")["eur_per_kw_day"] > 0.0
 
 
+def test_portfolio_coordination_reports_its_iterates(client):
+    result = warm(client, FEASIBLE)
+    reported = detail(result, "portfolio_coordination")
+
+    assert reported["iterations"] == 3
+    assert len(reported["peak_kw_by_iteration"]) == 3
+    assert reported["chosen_iteration"] in range(3)
+
+
+def test_portfolio_coordination_keeps_the_lowest_peak_iterate(client):
+    result = warm(client, FEASIBLE)
+    reported = detail(result, "portfolio_coordination")
+    peaks = reported["peak_kw_by_iteration"]
+
+    assert min(peaks) == peaks[reported["chosen_iteration"]]
+
+
 def _null_reason_present(warnings, function_name, failed_code):
     """True if `warnings` explains why `function_name`'s figure is null, whichever of
     its two failure modes is currently live: not implemented at all (`upstream_unavailable`,

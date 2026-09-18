@@ -43,6 +43,10 @@ HISTORY_DAYS = 10
 
 LOCAL_TZ = "Europe/Berlin"
 
+# Shadow price added to an interval already loaded to the baseline peak, EUR/MWh;
+# ASSUMED, order of the intra-day EPEX spread.
+SHADOW_EUR_MWH_AT_BASELINE_PEAK = 100.0
+
 # The canonical tables named in contracts/src/data.md. Listed here (rather than read
 # from src/data, whose SOURCES map only covers wired sources) so /api/health can show a
 # table that does not exist yet as absent rather than omitting it.
@@ -798,7 +802,7 @@ def _energy_kwh(load_kw: pd.DataFrame | None) -> float | None:
 
 
 def _schedule(spec, sessions_day, envelope, prices_day, baseline_day, warns):
-    """The optimised schedule and `src/sched`'s own scorecard, solved **per site**.
+    """The optimised schedule and `src/sched`'s own scorecard, solved per site.
 
     `contracts/src/service.md` names "infeasible site" as a `warnings[]` case, so one
     site whose sessions cannot be scheduled must not null out the whole scenario:
@@ -837,27 +841,96 @@ def _schedule(spec, sessions_day, envelope, prices_day, baseline_day, warns):
         eur_per_kw_day=float(sched.DEMAND_CHARGE_EUR_PER_KW_DAY),
     )
     site_ids = sorted(str(s) for s in pd.Series(envelope["site_id"]).unique())
-    frames, kept_sessions, infeasible = [], [], []
-    for site_id in site_ids:
-        site_sessions = sessions_day[sessions_day["site_id"] == site_id]
-        if site_sessions.empty:
-            continue
-        site_envelope = envelope[envelope["site_id"] == site_id]
-        try:
-            frames.append(
-                sched.schedule(
-                    site_sessions,
-                    site_envelope,
-                    prices_day,
-                    commitments=(),
-                    solver="lp",
-                    peak_price_eur_per_kw=sched.DEMAND_CHARGE_EUR_PER_KW_DAY,
+
+    def _solve_sites(prices_for_lp):
+        frames, kept_sessions, infeasible = [], [], []
+        for site_id in site_ids:
+            site_sessions = sessions_day[sessions_day["site_id"] == site_id]
+            if site_sessions.empty:
+                continue
+            site_envelope = envelope[envelope["site_id"] == site_id]
+            try:
+                frames.append(
+                    sched.schedule(
+                        site_sessions,
+                        site_envelope,
+                        prices_for_lp,
+                        commitments=(),
+                        solver="lp",
+                        peak_price_eur_per_kw=sched.DEMAND_CHARGE_EUR_PER_KW_DAY,
+                    )
                 )
+            except sched.Infeasible as exc:
+                infeasible.append((site_id, str(exc)))
+                continue
+            kept_sessions.append(site_sessions)
+        return frames, kept_sessions, infeasible
+
+    def _aggregate(frames):
+        parts = []
+        for frame in frames:
+            part = frame[["t", "power_kw"]].copy()
+            part.attrs = {}
+            parts.append(part)
+        if not parts:
+            return pd.Series(0.0, index=pd.DatetimeIndex(prices_day["t"]))
+        return (
+            pd.concat(parts, ignore_index=True)
+            .groupby("t")["power_kw"]
+            .sum()
+            .reindex(prices_day["t"], fill_value=0.0)
+        )
+
+    peak_base = (
+        float(baseline_day.groupby("t")["load_kw"].sum().max())
+        if len(baseline_day)
+        else 0.0
+    )
+    iterations = 3
+    frames, kept_sessions, infeasible = _solve_sites(prices_day)
+    aggregate = _aggregate(frames)
+    aggregates = [aggregate]
+    peaks = [float(aggregate.max()) if len(aggregate) else 0.0]
+    chosen_iteration = 0
+    if peak_base > 0.0:
+        for iteration in range(1, iterations):
+            aggregate_previous = aggregates[-1]
+            if iteration == 1:
+                aggregate_reference = aggregate_previous
+            else:
+                aggregate_reference = 0.5 * (aggregate_previous + aggregates[-2])
+            shadow_prices = prices_day.copy()
+            shadow_prices["price_eur_mwh"] = (
+                shadow_prices["price_eur_mwh"].to_numpy(dtype=float)
+                + SHADOW_EUR_MWH_AT_BASELINE_PEAK
+                * aggregate_reference.to_numpy(dtype=float)
+                / peak_base
             )
-        except sched.Infeasible as exc:
-            infeasible.append((site_id, str(exc)))
-            continue
-        kept_sessions.append(site_sessions)
+            candidate_frames, candidate_sessions, candidate_infeasible = _solve_sites(
+                shadow_prices
+            )
+            candidate_aggregate = _aggregate(candidate_frames)
+            candidate_peak = float(candidate_aggregate.max()) if len(candidate_aggregate) else 0.0
+            aggregates.append(candidate_aggregate)
+            peaks.append(candidate_peak)
+            if candidate_peak < peaks[chosen_iteration]:
+                frames, kept_sessions, infeasible = (
+                    candidate_frames,
+                    candidate_sessions,
+                    candidate_infeasible,
+                )
+                chosen_iteration = iteration
+        warns.add(
+            "portfolio_coordination",
+            "src/service",
+            "sites are scheduled independently, so the per-site LPs were re-solved with "
+            "an iterated shadow price on portfolio-loaded intervals; the iterate with the "
+            "lowest portfolio peak was kept",
+            iterations=iterations,
+            chosen_iteration=chosen_iteration,
+            peak_kw_by_iteration=peaks,
+            shadow_eur_mwh_at_baseline_peak=SHADOW_EUR_MWH_AT_BASELINE_PEAK,
+        )
 
     unscheduled = [site_id for site_id, _ in infeasible]
     if infeasible:
