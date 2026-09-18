@@ -14,13 +14,14 @@ Main Agent sign-off.
 
 ## Read order for a cold agent
 1. `CLAUDE.md` (or `AGENTS.md` if you're not Claude Code)
-2. `STATE.md` — live snapshot; wins over the worklog if they disagree about current truth
-3. `VISION.md` — the thesis
-4. `COMPETITION.md` — event facts
-5. `GOVERNANCE.md` — who may edit what
-6. `AGENTS.md` — multi-agent concurrency model
-7. `worklog.md` (tail) — recent history
-8. `experiments/experiment_log.md` — recent experiments
+2. `docs/HANDOFF.md` — takeover brief: what is built, what is not, and the agreed order of work
+3. `STATE.md` — live snapshot; wins over the worklog if they disagree about current truth
+4. `VISION.md` — the thesis
+5. `COMPETITION.md` — event facts
+6. `GOVERNANCE.md` — who may edit what
+7. `AGENTS.md` — multi-agent concurrency model
+8. `worklog.md` (tail) — recent history
+9. `experiments/experiment_log.md` — recent experiments
 
 ## Status
 Stack: **Python 3.12 only** — FastAPI + Jinja2 + CDN front-end, no node toolchain
