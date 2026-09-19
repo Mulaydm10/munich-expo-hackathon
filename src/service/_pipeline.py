@@ -37,11 +37,16 @@ from ._cache import FINGERPRINTED_TABLES
 from ._errors import BadSpec, MissingData, UpstreamUnavailable
 from ._spec import ScenarioSpec
 
-# Days of history synthesised before the scenario day so the forecast has its 168 h
-# lag/rolling features. 10 leaves ~3 complete training days after the 7-day warm-up.
-HISTORY_DAYS = 10
+# Maximum days of history synthesised before the scenario day.
+HISTORY_DAYS = 28
 
 LOCAL_TZ = "Europe/Berlin"
+
+# Shadow price added to an interval already loaded to the baseline peak, EUR/MWh;
+# ASSUMED, order of the intra-day EPEX spread.
+SHADOW_EUR_MWH_AT_BASELINE_PEAK = 100.0
+# Convex so loading an interval near the portfolio peak costs far more than filling a valley.
+SHADOW_EXPONENT = 3
 
 # The canonical tables named in contracts/src/data.md. Listed here (rather than read
 # from src/data, whose SOURCES map only covers wired sources) so /api/health can show a
@@ -277,6 +282,18 @@ def _weather_area(weather: pd.DataFrame, warns: Warnings) -> pd.DataFrame:
     return out.sort_values("t").reset_index(drop=True)
 
 
+def _history_days(day_start: pd.Timestamp, requested_start: pd.Timestamp, *tables) -> int:
+    """Return complete history days available before `day_start` in canonical tables."""
+    starts = []
+    for table in tables:
+        if table is not None and len(table):
+            starts.append(pd.Timestamp(table["t"].min()))
+    if not starts:
+        return 0
+    available_start = max(starts)
+    return max(0, int((day_start - available_start).total_seconds() // 86400))
+
+
 # ---------------------------------------------------------------------------
 # the pipeline
 # ---------------------------------------------------------------------------
@@ -292,17 +309,39 @@ def build(spec: ScenarioSpec, *, root=None, progress=None) -> tuple[dict, LiveSc
     warns = Warnings()
     day = date.fromisoformat(spec.date)
     day_start, day_end = _day_bounds(day)
-    hist_start = pd.Timestamp(day - timedelta(days=HISTORY_DAYS), tz=LOCAL_TZ).tz_convert("UTC")
+    requested_hist_start = pd.Timestamp(
+        day - timedelta(days=HISTORY_DAYS), tz=LOCAL_TZ
+    ).tz_convert("UTC")
     day_index = _grid(day_start, day_end)
-    span_index = _grid(hist_start, day_end)
 
     # -- data ---------------------------------------------------------------
     step(0.05, "data:sites")
     sites = _select_sites(_load_required("sites", root), spec, warns)
 
     step(0.10, "data:tables")
-    prices = _load_required("prices", root, start=hist_start, end=day_end)
+    prices = _load_required("prices", root, start=requested_hist_start, end=day_end)
     data.require_columns(prices, ["t", "price_eur_mwh"])
+    try:
+        grid_load = data.load("grid_load", root=root, start=requested_hist_start, end=day_end)
+    except data.MissingTable:
+        grid_load = None
+    history_days = _history_days(day_start, requested_hist_start, prices, grid_load)
+    if history_days < 10:
+        raise MissingData(
+            f"only {history_days} days of history are available before the scenario day",
+            "build at least 10 days of `grid_load`/`prices` history before the scenario day",
+        )
+    if history_days < HISTORY_DAYS:
+        warns.add(
+            "history_truncated",
+            "src/service",
+            "the canonical grid-load/price tables start after the requested history window; "
+            "the forecast used the available history",
+            requested=int(HISTORY_DAYS),
+            used=int(history_days),
+        )
+    hist_start = day_start - pd.Timedelta(days=history_days)
+    span_index = _grid(hist_start, day_end)
     _require_full_grid(prices, span_index, "prices")
 
     weather_raw = _load_required("weather", root, start=hist_start, end=day_end)
@@ -339,7 +378,7 @@ def build(spec: ScenarioSpec, *, root=None, progress=None) -> tuple[dict, LiveSc
     else:
         sites_classified = classify(sites)
 
-    days = [day - timedelta(days=n) for n in range(HISTORY_DAYS, -1, -1)]
+    days = [day - timedelta(days=n) for n in range(history_days, -1, -1)]
     sessions = synthesise(sites_classified, weather, days, seed=spec.seed)
     _fleet_session_warnings(sessions, warns)
 
@@ -361,6 +400,9 @@ def build(spec: ScenarioSpec, *, root=None, progress=None) -> tuple[dict, LiveSc
             count=int(n_truncated),
             total_sessions=int(len(sessions)),
         )
+    sessions_day, residual_seed_by_t = _clamp_sessions_to_grid(
+        sessions_day, sessions, day_index, day_start, day_end, to_load, warns
+    )
 
     # -- grid ---------------------------------------------------------------
     step(0.35, "grid:envelope")
@@ -378,7 +420,9 @@ def build(spec: ScenarioSpec, *, root=None, progress=None) -> tuple[dict, LiveSc
 
     # -- forecast -----------------------------------------------------------
     step(0.50, "forecast:fit")
-    preds, calibration = _forecast(spec, base_load, weather, prices, day_start, day_end, warns)
+    preds, calibration, accuracy = _forecast(
+        spec, base_load, weather, prices, day_start, day_end, history_days, warns
+    )
 
     # -- market: firm capacity + pooling ------------------------------------
     step(0.70, "market:firm")
@@ -404,7 +448,14 @@ def build(spec: ScenarioSpec, *, root=None, progress=None) -> tuple[dict, LiveSc
     baseline_day = base_load[(base_load["t"] >= day_start) & (base_load["t"] < day_end)]
     baseline_by_t = _by_t(baseline_day, "load_kw", day_index)
     optimised, scorecard, _unscheduled_sites = _schedule(
-        spec, sessions_day, envelope, prices_day, baseline_day, warns
+        spec,
+        sessions_day,
+        envelope,
+        prices_day,
+        baseline_day,
+        day_index,
+        residual_seed_by_t,
+        warns,
     )
 
     # -- market: money and carbon -------------------------------------------
@@ -470,6 +521,7 @@ def build(spec: ScenarioSpec, *, root=None, progress=None) -> tuple[dict, LiveSc
         "totals": totals,
         "scorecard": scorecard,
         "calibration": calibration,
+        "forecast_accuracy": accuracy,
         "warnings": warns.as_list(),
     }
     doc = {
@@ -648,18 +700,20 @@ def _build_envelope(sites, spec, weather, base_load, day_index, day_start, warns
     return envelope, rate
 
 
-def _forecast(spec, base_load, weather, prices, day_start, day_end, warns):
-    features = forecast.make_features(base_load, weather, prices, horizon_h=36)
+def _forecast(spec, base_load, weather, prices, day_start, day_end, history_days, warns):
+    agg = forecast.aggregate_load(base_load)
+    features = forecast.make_features(agg, weather, prices, horizon_h=36)
     train = features[features["t"] < day_start]
     day_rows = features[(features["t"] >= day_start) & (features["t"] < day_end)]
     if train.empty or day_rows.empty:
         raise MissingData(
             "not enough history to fit a forecast for this scenario day",
-            f"the pipeline synthesises {HISTORY_DAYS} days of history; a shorter "
+            f"the pipeline synthesises up to {HISTORY_DAYS} days of history and used "
+            f"{history_days}; a shorter "
             "`weather`/`prices` window than that cannot support the 168 h lag features",
         )
-    model = forecast.fit(train, base_load, quantiles=forecast.QUANTILES, seed=spec.seed)
-    preds = model.predict(day_rows)
+    model = forecast.fit(train, agg, quantiles=forecast.QUANTILES, seed=spec.seed)
+    preds_p = model.predict(day_rows)
     warns.rate(
         "forecast_quantile_crossing",
         "src/forecast",
@@ -675,9 +729,7 @@ def _forecast(spec, base_load, weather, prices, day_start, day_end, warns):
         model.last_predict_fallback_rate,
     )
 
-    truth = day_rows[["t", "site_id"]].merge(
-        base_load[["t", "site_id", "load_kw"]], on=["t", "site_id"], how="left"
-    )
+    truth = day_rows[["t"]].merge(agg[["t", "load_kw"]], on="t", how="left")
     y = truth["load_kw"]
     usable = ~y.isna()
     if not usable.all():
@@ -690,14 +742,60 @@ def _forecast(spec, base_load, weather, prices, day_start, day_end, warns):
             dropped=int((~usable).sum()),
         )
     if not usable.any():
-        return preds, {}
-    curve = forecast.reliability_curve(
-        y[usable].to_numpy(dtype=float), preds.loc[usable.to_numpy()].reset_index(drop=True)
+        calibration = {}
+    else:
+        curve = forecast.reliability_curve(
+            y[usable].to_numpy(dtype=float),
+            preds_p.loc[usable.to_numpy()].reset_index(drop=True),
+        )
+        calibration = {
+            f"{row.tau_nominal:g}": _f(row.coverage_empirical)
+            for row in curve.itertuples(index=False)
+        }
+
+    history = agg[agg["t"] < day_start]
+    day_times = pd.DatetimeIndex(day_rows["t"])
+    y_values = y.to_numpy(dtype=float)
+    median_metrics = forecast.point_metrics(y_values, preds_p["q50"].to_numpy(dtype=float))
+    seasonal_values = forecast.seasonal_naive(history, day_times, days=7)
+    seasonal_metrics = forecast.point_metrics(y_values, seasonal_values)
+    recent = history[history["t"] >= day_start - pd.Timedelta(days=7)].copy()
+    recent["slot_15min"] = recent["t"].dt.hour * 4 + recent["t"].dt.minute // 15
+    day_slots = day_times.hour * 4 + day_times.minute // 15
+    climatology_by_slot = recent.groupby("slot_15min")["load_kw"].mean()
+    climatology_values = climatology_by_slot.reindex(day_slots).to_numpy(dtype=float)
+    climatology_metrics = forecast.point_metrics(y_values, climatology_values)
+    q05 = preds_p["q05"].to_numpy(dtype=float)
+    q95 = preds_p["q95"].to_numpy(dtype=float)
+    coverage_valid = ~np.isnan(y_values) & ~np.isnan(q05) & ~np.isnan(q95)
+    coverage_q05_q95 = (
+        float(np.mean((q05[coverage_valid] <= y_values[coverage_valid])
+                      & (y_values[coverage_valid] <= q95[coverage_valid])))
+        if coverage_valid.any()
+        else None
     )
-    calibration = {
-        f"{row.tau_nominal:g}": _f(row.coverage_empirical) for row in curve.itertuples(index=False)
+    wape = _f(median_metrics["wape"]) if median_metrics["n"] else None
+    accuracy = {
+        "level": "portfolio",
+        "history_days": int(history_days),
+        "mae_kw": _f(median_metrics["mae_kw"]) if median_metrics["n"] else None,
+        "wape": wape,
+        "accuracy_pct": (100.0 * (1.0 - wape)) if wape is not None else None,
+        "seasonal_naive_wape": (
+            _f(seasonal_metrics["wape"]) if seasonal_metrics["n"] else None
+        ),
+        "climatology_wape": (
+            _f(climatology_metrics["wape"]) if climatology_metrics["n"] else None
+        ),
+        "coverage_q05_q95": coverage_q05_q95,
+        "sharpness_kw": _f(forecast.sharpness(preds_p)),
     }
-    return preds, calibration
+    site_history = base_load[base_load["t"] < day_start]
+    shares = forecast.site_shares(site_history)
+    preds = forecast.split_portfolio(preds_p, shares)
+    scenario_sites = set(base_load["site_id"].unique())
+    preds = preds[preds["site_id"].isin(scenario_sites)].reset_index(drop=True)
+    return preds, calibration, accuracy
 
 
 def _pooling(spec, firm, day_index, warns):
@@ -797,8 +895,92 @@ def _energy_kwh(load_kw: pd.DataFrame | None) -> float | None:
     return float((load_kw["load_kw"].to_numpy(dtype=float) * np.asarray(per_row, dtype=float)).sum())
 
 
-def _schedule(spec, sessions_day, envelope, prices_day, baseline_day, warns):
-    """The optimised schedule and `src/sched`'s own scorecard, solved **per site**.
+def _clamp_sessions_to_grid(
+    sessions_day,
+    sessions,
+    day_index,
+    day_start,
+    day_end,
+    to_load,
+    warns,
+):
+    grid = pd.DatetimeIndex(day_index).sort_values().unique()
+    if len(grid) >= 2:
+        gaps = grid.to_series().diff().shift(-1)
+        gaps.iloc[-1] = gaps.iloc[-2]
+        dt_by_t = gaps.dt.total_seconds() / 3600.0
+    else:
+        dt_by_t = pd.Series(0.25, index=grid)
+    grid_start = grid.values
+    grid_end = (grid + pd.to_timedelta(dt_by_t, unit="h")).values
+    sessions_for_schedule = sessions_day.copy()
+    clamped_count = 0
+    clamped_kwh = 0.0
+    dropped_sessions = 0
+    keep = []
+    for row in sessions_for_schedule.itertuples():
+        arrive = np.datetime64(pd.Timestamp(row.t_arrive).to_datetime64())
+        depart = np.datetime64(pd.Timestamp(row.t_depart).to_datetime64())
+        overlap_h = (
+            np.maximum(
+                np.minimum(depart, grid_end) - np.maximum(arrive, grid_start),
+                np.timedelta64(0, "ns"),
+            )
+            / np.timedelta64(1, "h")
+        )
+        deliverable = float(row.max_power_kw) * float(overlap_h.sum())
+        if deliverable <= 0.0:
+            dropped_sessions += 1
+            keep.append(False)
+        else:
+            keep.append(True)
+            excess = float(row.energy_kwh - deliverable)
+            if excess > 1e-6:
+                clamped_count += 1
+                clamped_kwh += excess
+            if excess > -1e-6:
+                sessions_for_schedule.at[row.Index, "energy_kwh"] = min(
+                    float(row.energy_kwh), deliverable
+                )
+    sessions_for_schedule = sessions_for_schedule.loc[keep].copy()
+    if clamped_count or dropped_sessions:
+        warns.add(
+            "session_energy_clamped_to_grid",
+            "src/service",
+            "sessions whose energy_kwh exceeds what max_power_kw can deliver over the "
+            "grid intervals overlapping their dwell were clamped to that amount before "
+            "scheduling (the remainder falls outside the day grid); sessions with no "
+            "overlap with the day grid were left unscheduled",
+            count=int(clamped_count),
+            clamped_kwh=float(clamped_kwh),
+            dropped_sessions=int(dropped_sessions),
+        )
+    offered_ids = set(sessions_for_schedule["session_id"])
+    unoffered = sessions[~sessions["session_id"].isin(offered_ids)]
+    if len(unoffered):
+        residual = to_load(unoffered, freq="15min", policy="asap")
+        residual = residual.copy()
+        residual["t"] = pd.DatetimeIndex(residual["t"])
+        residual = residual[
+            (residual["t"] >= day_start) & (residual["t"] < day_end)
+        ]
+        residual_seed_by_t = _by_t(residual, "load_kw", day_index)
+    else:
+        residual_seed_by_t = pd.Series(0.0, index=day_index, dtype=float)
+    return sessions_for_schedule, residual_seed_by_t
+
+
+def _schedule(
+    spec,
+    sessions_day,
+    envelope,
+    prices_day,
+    baseline_day,
+    day_index,
+    residual_seed_by_t: pd.Series | None,
+    warns,
+):
+    """The optimised schedule and `src/sched`'s own scorecard, solved per site.
 
     `contracts/src/service.md` names "infeasible site" as a `warnings[]` case, so one
     site whose sessions cannot be scheduled must not null out the whole scenario:
@@ -830,25 +1012,163 @@ def _schedule(spec, sessions_day, envelope, prices_day, baseline_day, warns):
         "commitment.",
         commitments=0,
     )
+    warns.add(
+        "demand_charge_applied",
+        "src/service",
+        "the optimised schedule minimises energy cost plus a demand charge on each site's daily peak (src.sched.DEMAND_CHARGE_EUR_PER_KW_DAY); source is ASSUMED, see src/sched",
+        eur_per_kw_day=float(sched.DEMAND_CHARGE_EUR_PER_KW_DAY),
+    )
+    sessions_for_schedule = sessions_day
     site_ids = sorted(str(s) for s in pd.Series(envelope["site_id"]).unique())
-    frames, kept_sessions, infeasible = [], [], []
-    for site_id in site_ids:
-        site_sessions = sessions_day[sessions_day["site_id"] == site_id]
+
+    def _solve_site(site_id, prices_for_lp):
+        site_sessions = sessions_for_schedule[sessions_for_schedule["site_id"] == site_id]
         if site_sessions.empty:
-            continue
+            return None, None, None
         site_envelope = envelope[envelope["site_id"] == site_id]
         try:
-            frames.append(
-                sched.schedule(
-                    site_sessions, site_envelope, prices_day, commitments=(), solver="lp"
-                )
+            frame = sched.schedule(
+                site_sessions,
+                site_envelope,
+                prices_for_lp,
+                commitments=(),
+                solver="lp",
+                peak_price_eur_per_kw=sched.DEMAND_CHARGE_EUR_PER_KW_DAY,
             )
         except sched.Infeasible as exc:
-            infeasible.append((site_id, str(exc)))
-            continue
-        kept_sessions.append(site_sessions)
+            return None, None, (site_id, str(exc))
+        return frame, site_sessions, None
 
-    unscheduled = [site_id for site_id, _ in infeasible]
+    def _aggregate(frames):
+        parts = []
+        for frame in frames.values():
+            part = frame[["t", "power_kw"]].copy()
+            part.attrs = {}
+            parts.append(part)
+        if not parts:
+            return pd.Series(0.0, index=pd.DatetimeIndex(prices_day["t"]))
+        return (
+            pd.concat(parts, ignore_index=True)
+            .groupby("t")["power_kw"]
+            .sum()
+            .reindex(prices_day["t"], fill_value=0.0)
+        )
+
+    def _site_load(frame):
+        if frame is None or frame.empty:
+            return pd.Series(0.0, index=pd.DatetimeIndex(prices_day["t"]))
+        return (
+            frame.groupby("t")["power_kw"]
+            .sum()
+            .reindex(prices_day["t"], fill_value=0.0)
+        )
+
+    def _ordered_sites():
+        energy = baseline_day.groupby("site_id")["load_kw"].sum()
+        return sorted(
+            site_ids,
+            key=lambda site_id: (-float(energy.get(site_id, 0.0)), site_id),
+        )
+
+    def _solve_sweep(order, initial_agg, previous_frames=None):
+        agg = initial_agg.copy()
+        frames = {} if previous_frames is None else dict(previous_frames)
+        kept = {}
+        infeasible = {}
+        for site_id in order:
+            if previous_frames is not None:
+                agg -= _site_load(previous_frames.get(site_id))
+            shadow_prices = prices_day.copy()
+            if peak_base > 0.0:
+                shadow_prices["price_eur_mwh"] = (
+                    shadow_prices["price_eur_mwh"].to_numpy(dtype=float)
+                    + SHADOW_EUR_MWH_AT_BASELINE_PEAK
+                    * (
+                        agg.reindex(shadow_prices["t"]).fillna(0.0).to_numpy(dtype=float)
+                        / peak_base
+                    )
+                    ** SHADOW_EXPONENT
+                )
+            frame, site_sessions, error = _solve_site(site_id, shadow_prices)
+            if frame is None:
+                frames.pop(site_id, None)
+                kept.pop(site_id, None)
+                if error is not None:
+                    infeasible[site_id] = error[1]
+            else:
+                frames[site_id] = frame
+                kept[site_id] = site_sessions
+                agg += _site_load(frame)
+        return frames, kept, infeasible, agg
+
+    peak_base = (
+        float(baseline_day.groupby("t")["load_kw"].sum().max())
+        if len(baseline_day)
+        else 0.0
+    )
+    order = _ordered_sites()
+    residual_seed = (
+        residual_seed_by_t.reindex(prices_day["t"]).fillna(0.0).astype(float)
+        if residual_seed_by_t is not None
+        else pd.Series(0.0, index=pd.DatetimeIndex(prices_day["t"]))
+    )
+    frames, kept_sessions, infeasible, aggregate = _solve_sweep(
+        order, residual_seed
+    )
+    peaks = [float(aggregate.max()) if len(aggregate) else 0.0]
+    chosen_sweep = 0
+    selected_frames = frames
+    selected_kept_sessions = kept_sessions
+    selected_infeasible = infeasible
+    if peak_base > 0.0:
+        for sweep in range(1, 3):
+            (
+                candidate_frames,
+                candidate_sessions,
+                candidate_infeasible,
+                candidate_aggregate,
+            ) = _solve_sweep(
+                order, aggregate, previous_frames=frames
+            )
+            candidate_peak = (
+                float(candidate_aggregate.max()) if len(candidate_aggregate) else 0.0
+            )
+            peaks.append(candidate_peak)
+            if candidate_peak < peaks[chosen_sweep]:
+                selected_frames, selected_kept_sessions, selected_infeasible = (
+                    candidate_frames,
+                    candidate_sessions,
+                    candidate_infeasible,
+                )
+                chosen_sweep = sweep
+            frames, kept_sessions, infeasible, aggregate = (
+                candidate_frames,
+                candidate_sessions,
+                candidate_infeasible,
+                candidate_aggregate,
+            )
+        frames, kept_sessions, infeasible = (
+            selected_frames,
+            selected_kept_sessions,
+            selected_infeasible,
+        )
+        warns.add(
+            "portfolio_coordination",
+            "src/service",
+            "sites are scheduled independently, so the per-site LPs were re-solved "
+            "sequentially with a shadow price on the running portfolio load; the sweep "
+            "with the lowest portfolio peak was kept",
+            sweeps=3,
+            chosen_sweep=chosen_sweep,
+            peak_kw_by_sweep=peaks,
+            shadow_eur_mwh_at_baseline_peak=SHADOW_EUR_MWH_AT_BASELINE_PEAK,
+            shadow_exponent=SHADOW_EXPONENT,
+            includes_residual=True,
+        )
+
+    frames = [frames[site_id] for site_id in order if site_id in frames]
+    kept_sessions = [kept_sessions[site_id] for site_id in order if site_id in kept_sessions]
+    unscheduled = list(infeasible)
     if infeasible:
         fallback_load = baseline_day[baseline_day["site_id"].isin(unscheduled)]
         warns.add(
@@ -860,7 +1180,7 @@ def _schedule(spec, sessions_day, envelope, prices_day, baseline_day, warns):
             rate=float(len(infeasible) / len(site_ids)) if site_ids else 0.0,
             sites=unscheduled,
             baseline_energy_kwh=_f(_energy_kwh(fallback_load)),
-            binding={site_id: message for site_id, message in infeasible},
+            binding=dict(infeasible),
         )
 
     if not frames:
@@ -882,6 +1202,7 @@ def _schedule(spec, sessions_day, envelope, prices_day, baseline_day, warns):
         prices=prices_day,
         commitments=(),
         solver="lp",
+        peak_price_eur_per_kw=float(sched.DEMAND_CHARGE_EUR_PER_KW_DAY),
     )
     scorecard = sched.evaluate(optimised, scheduled_sessions, scheduled_envelope, prices_day, ())
     scorecard = {k: _f(v) if isinstance(v, (int, float, np.generic)) else v

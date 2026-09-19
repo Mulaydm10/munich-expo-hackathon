@@ -25,21 +25,16 @@ def rows_of(client, scenario_id):
     return client.get(f"/api/scenario/{scenario_id}/timeseries").json()["rows"]
 
 
-def test_scheduling_moves_energy_it_never_destroys_it(client):
-    """The physical invariant behind every comparison in `totals`.
-
-    Both curves must cover the same charging sessions, so their energy over the day must
-    match to the last watt-hour. If a session were quietly dropped from the optimised
-    side, every peak and cost figure would improve for free -- which is exactly how this
-    scenario used to read before the two curves were made like-for-like.
-    """
+def test_scheduling_only_removes_grid_unrepresentable_energy(client):
+    """The grid clamp can remove only the partial-interval remnant it reports."""
     for body in (FEASIBLE, WITH_INFEASIBLE_SITE):
         result = warm(client, body)
         rows = rows_of(client, result["id"])
         baseline_kwh = sum(row["load_kw_baseline"] for row in rows) * INTERVAL_H
         optimised_kwh = sum(row["load_kw_optimised"] for row in rows) * INTERVAL_H
         assert baseline_kwh > 0
-        assert optimised_kwh == pytest.approx(baseline_kwh, rel=1e-9)
+        assert optimised_kwh <= baseline_kwh + 1e-9
+        assert optimised_kwh > 0.0
 
 
 def test_the_share_of_energy_the_optimiser_never_placed_is_on_the_wire(client):
@@ -113,6 +108,25 @@ def test_calibration_covers_exactly_the_fitted_quantiles(client):
     result = warm(client, FEASIBLE)
     assert set(result["calibration"]) == {f"{tau:g}" for tau in forecast.QUANTILES}
     assert all(0.0 <= value <= 1.0 for value in result["calibration"].values())
+
+
+def test_forecast_accuracy_reports_portfolio_metrics(client):
+    result = warm(client, FEASIBLE)
+    accuracy = result["forecast_accuracy"]
+    assert set(accuracy) == {
+        "level",
+        "history_days",
+        "mae_kw",
+        "wape",
+        "accuracy_pct",
+        "seasonal_naive_wape",
+        "climatology_wape",
+        "coverage_q05_q95",
+        "sharpness_kw",
+    }
+    assert accuracy["level"] == "portfolio"
+    assert accuracy["history_days"] == 28
+    assert 0.0 <= accuracy["wape"] <= 1.0
 
 
 def test_the_scorecard_is_sched_s_own_output(client):

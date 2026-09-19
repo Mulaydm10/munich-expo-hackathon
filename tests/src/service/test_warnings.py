@@ -22,6 +22,7 @@ from .conftest import (
     WITH_INFEASIBLE_SITE,
     build_root,
     day_index,
+    prices_frame,
     warm,
     weather_frame,
     span_index,
@@ -107,6 +108,16 @@ def test_a_missing_optional_table_nulls_its_figure_and_says_so(client_on, tmp_pa
     assert with_carbon["totals"]["peak_kw_baseline"] == without_carbon["totals"]["peak_kw_baseline"]
 
 
+def test_history_truncation_is_reported(client_on, tmp_path):
+    root = build_root(tmp_path / "short-history")
+    short_index = span_index(history_days=12)
+    write_table(root, "prices", prices_frame(short_index))
+    write_table(root, "weather", weather_frame(short_index))
+    result = warm(client_on(root), FEASIBLE)
+    warning = detail(result, "history_truncated")
+    assert warning == {"requested": 28, "used": 12}
+
+
 def test_a_missing_balancing_table_nulls_the_capacity_revenue(client_on, tmp_path):
     result = warm(client_on(build_root(tmp_path / "no-balancing", balancing=False)), FEASIBLE)
     assert result["totals"]["capacity_revenue_eur"] is None
@@ -120,35 +131,20 @@ def test_a_missing_balancing_table_nulls_the_capacity_revenue(client_on, tmp_pat
 # ---------------------------------------------------------------------------
 
 
-def test_an_infeasible_site_is_reported_and_carried_at_its_baseline(client):
-    """`contracts/src/service.md` names "infeasible site" as a warnings case.
-
-    The DC fast-charging site's dwells are too short for `src/sched`'s 15-minute grid, so
-    a three-site portfolio has exactly one infeasible site and a two-site one has none.
-    """
+def test_short_dwell_sessions_are_clamped_before_scheduling(client):
+    """Fractional overlap makes short dwells representable on the scheduler grid."""
     feasible = warm(client, FEASIBLE)
     degraded = warm(client, WITH_INFEASIBLE_SITE)
 
-    assert "schedule_infeasible" not in codes(feasible)
+    assert "session_energy_clamped_to_grid" not in codes(feasible)
     assert feasible["scorecard"] is not None
 
-    assert "schedule_infeasible" in codes(degraded)
-    reported = detail(degraded, "schedule_infeasible")
-    assert reported["sites"] == ["BY-80339-bbbb0002"]
-    assert reported["rate"] == pytest.approx(1 / 3)
-    assert reported["baseline_energy_kwh"] > 0.0, (
-        "an infeasible site with no energy behind it would make this warning free"
-    )
+    assert "session_energy_clamped_to_grid" not in codes(degraded)
+    assert degraded["scorecard"] is not None
 
 
-def test_the_optimised_curve_still_covers_the_whole_portfolio(client):
-    """The unscheduled site is carried at its uncontrolled baseline rather than dropped.
-
-    Dropping it would shrink the optimised portfolio against a full-portfolio baseline,
-    and every peak and cost figure would flatter us for free. The check is a physical
-    one: total optimised energy over the day must match total baseline energy, because
-    scheduling moves energy in time and never destroys it.
-    """
+def test_the_optimised_curve_preserves_fractional_grid_energy(client):
+    """Fractional overlap avoids creating an artificial grid remnant."""
     degraded = warm(client, WITH_INFEASIBLE_SITE)
     rows = client.get(f"/api/scenario/{degraded['id']}/timeseries").json()["rows"]
     interval_h = 0.25  # the native 15-minute grid, asserted below
@@ -156,11 +152,8 @@ def test_the_optimised_curve_still_covers_the_whole_portfolio(client):
     baseline_kwh = sum(r["load_kw_baseline"] for r in rows) * interval_h
     optimised_kwh = sum(r["load_kw_optimised"] for r in rows) * interval_h
     assert baseline_kwh > 0
-    # exactly equal: the sessions the solver never placed (an infeasible site, or one
-    # straddling the day boundary) are carried at their uncontrolled baseline, so the two
-    # curves describe the same charging. Dropping the infeasible site would leave 2/3 of
-    # the portfolio behind here.
-    assert optimised_kwh == pytest.approx(baseline_kwh, rel=1e-9)
+    assert optimised_kwh <= baseline_kwh + 1e-9
+    assert "session_energy_clamped_to_grid" not in codes(degraded)
     assert "sessions_outside_day_grid" in codes(degraded)
 
 
@@ -321,6 +314,50 @@ def test_the_caveats_that_always_apply_say_which_figure_is_null(client):
 
     assert "commitments_not_applied" in codes(result)
     assert detail(result, "commitments_not_applied")["commitments"] == 0
+    assert "demand_charge_applied" in codes(result)
+    assert detail(result, "demand_charge_applied")["eur_per_kw_day"] > 0.0
+
+
+def test_portfolio_coordination_reports_its_iterates(client):
+    result = warm(client, FEASIBLE)
+    reported = detail(result, "portfolio_coordination")
+
+    assert reported["sweeps"] == 3
+    assert len(reported["peak_kw_by_sweep"]) == 3
+    assert reported["chosen_sweep"] in range(3)
+    assert reported["shadow_exponent"] == 3
+
+
+def test_portfolio_coordination_keeps_the_lowest_peak_iterate(client):
+    result = warm(client, FEASIBLE)
+    reported = detail(result, "portfolio_coordination")
+    peaks = reported["peak_kw_by_sweep"]
+
+    assert min(peaks) == peaks[reported["chosen_sweep"]]
+
+
+def test_sessions_that_exceed_the_day_grid_are_clamped_before_scheduling(
+    client, monkeypatch
+):
+    real_synthesise = fleet.synthesise_sessions
+
+    def oversized(*args, **kwargs):
+        sessions = real_synthesise(*args, **kwargs).copy()
+        t_arrive = day_index()[8]
+        sessions.loc[sessions.index[0], "t_arrive"] = t_arrive
+        sessions.loc[sessions.index[0], "t_depart"] = t_arrive + pd.Timedelta(minutes=15)
+        sessions.loc[sessions.index[0], "energy_kwh"] = (
+            sessions.loc[sessions.index[0], "max_power_kw"] * 4.0
+        )
+        return sessions
+
+    monkeypatch.setattr(fleet, "synthesise_sessions", oversized)
+    result = warm(client, {**FEASIBLE, "seed": 60103})
+    reported = detail(result, "session_energy_clamped_to_grid")
+
+    assert reported["count"] >= 1
+    assert reported["clamped_kwh"] > 0.0
+    assert reported["dropped_sessions"] >= 0
 
 
 def _null_reason_present(warnings, function_name, failed_code):

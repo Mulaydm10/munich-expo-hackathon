@@ -81,6 +81,7 @@ class ScenarioResult:
     totals: dict
     scorecard: dict | None
     calibration: dict
+    forecast_accuracy: dict
     warnings: list
 
     def to_dict(self) -> dict:
@@ -95,6 +96,7 @@ class ScenarioResult:
             totals=r["totals"],
             scorecard=r["scorecard"],
             calibration=r["calibration"],
+            forecast_accuracy=r.get("forecast_accuracy", {}),
             warnings=r["warnings"],
         )
 

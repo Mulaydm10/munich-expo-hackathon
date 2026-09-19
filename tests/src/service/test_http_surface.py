@@ -20,7 +20,15 @@ from src.service import _pipeline as pipeline
 
 from .conftest import DAY, FEASIBLE, SECRET_VALUE, day_index, sites_frame, warm
 
-RESULT_KEYS = {"id", "spec", "totals", "scorecard", "calibration", "warnings"}
+RESULT_KEYS = {
+    "id",
+    "spec",
+    "totals",
+    "scorecard",
+    "calibration",
+    "forecast_accuracy",
+    "warnings",
+}
 TOTALS_KEYS = {
     "energy_cost_eur",
     "capacity_revenue_eur",
@@ -53,7 +61,7 @@ def test_health_names_every_canonical_table_and_counts_the_ones_on_disk(client, 
     assert set(body["tables"]) == set(pipeline.CANONICAL_TABLES)
     # the row counts are the fixture's own, computed here rather than read back
     assert body["tables"]["sites"] == len(sites_frame(3))
-    assert body["tables"]["prices"] == len(day_index()) * 11  # 10 history days + the day
+    assert body["tables"]["prices"] == len(day_index()) * 29  # 28 history days + the day
     assert body["status"] == "ok"
 
 
