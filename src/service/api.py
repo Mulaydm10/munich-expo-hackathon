@@ -35,11 +35,13 @@ from pathlib import Path
 
 import pandas as pd
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from starlette.staticfiles import StaticFiles
 
 from src.data import api as data
 from src.market import api as market
 from src.sched import api as sched
+from src.ui import api as ui
 
 from . import _cache as cache
 from . import _pipeline as pipeline
@@ -154,6 +156,17 @@ app = FastAPI(
     description="Runs one scenario through the FlexGrid pipeline and serves it as JSON.",
     version="0.1.0",
 )
+app.mount("/static", StaticFiles(directory=str(ui.STATIC_DIR)), name="static")
+
+
+@app.get("/", response_class=HTMLResponse)
+def landing() -> HTMLResponse:
+    return HTMLResponse(ui.render_page("landing"))
+
+
+@app.get("/simulator", response_class=HTMLResponse)
+def simulator() -> HTMLResponse:
+    return HTMLResponse(ui.render_page("simulator"))
 
 
 def _root() -> Path:
