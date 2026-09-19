@@ -41,7 +41,10 @@ export class NetworkMap {
   _geom() {
     const r = Math.min(devicePixelRatio || 1, 2);
     const w = this.canvas.clientWidth, h = this.canvas.clientHeight;
-    if (this.canvas.width !== Math.round(w * r)) { this.canvas.width = Math.round(w * r); this.canvas.height = Math.round(h * r); }
+    if (this.canvas.width !== Math.round(w * r) || this.canvas.height !== Math.round(h * r)) {
+      this.canvas.width = Math.round(w * r);
+      this.canvas.height = Math.round(h * r);
+    }
     const ctx = this.canvas.getContext('2d');
     ctx.setTransform(r, 0, 0, r, 0, 0);
     ctx.clearRect(0, 0, w, h);

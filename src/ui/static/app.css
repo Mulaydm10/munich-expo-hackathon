@@ -98,6 +98,7 @@ kbd {
   border-radius: var(--r);
   padding: 16px 18px;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.025);
+  min-width: 0;
 }
 .panel > header {
   display: flex;
@@ -121,8 +122,8 @@ kbd {
 
 .rowlist { display: flex; flex-direction: column; gap: 9px; }
 .kv { display: flex; align-items: baseline; justify-content: space-between; gap: 14px; font-size: 16px; }
-.kv .k { color: var(--ink-dim); }
-.kv .v { font-weight: 600; }
+.kv .k { color: var(--ink-dim); flex: 0 0 auto; }
+.kv .v { font-weight: 600; text-align: right; overflow-wrap: anywhere; min-width: 0; }
 
 .tag {
   display: inline-flex; align-items: center; gap: 6px;
@@ -252,7 +253,8 @@ footer.site { padding: 30px clamp(24px, 4vw, 72px) 56px; color: var(--ink-faint)
   padding: 12px;
   min-height: 0;
 }
-.rail { display: grid; gap: 12px; align-content: start; min-height: 0; overflow: auto; padding-right: 2px; }
+.workspace > * { min-width: 0; }
+.rail { display: grid; gap: 12px; align-content: start; min-height: 0; overflow: auto; overflow-x: hidden; padding-right: 2px; }
 .centre { display: grid; grid-template-rows: minmax(0, 1fr) auto; gap: 12px; min-height: 0; }
 
 .chartwrap { position: relative; min-height: 0; }
@@ -305,6 +307,8 @@ progress { width: 100%; height: 8px; }
 
 /* copilot */
 #copilot-btn { position: fixed; right: 22px; bottom: 22px; z-index: 50; }
+.workspace ~ #copilot-btn { right: 520px; }
+body:has(.workspace) #copilot-btn { right: 520px; }
 .mic {
   width: 62px; height: 62px; border-radius: 50%;
   background: var(--navy-600); border: 1px solid var(--line);

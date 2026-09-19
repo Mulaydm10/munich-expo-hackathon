@@ -113,7 +113,7 @@ async function initLanding() {
   // ---- opening sequence ----
   let cancelled = false;
   function stopIntro() { cancelled = true; overlay.classList.remove('on'); }
-  document.getElementById('skip').addEventListener('click', () => { stopIntro(); scene.flyTo(scene.home, undefined, 900); applyTime(+timeEl.value); });
+  document.getElementById('skip-intro').addEventListener('click', () => { stopIntro(); scene.flyTo(scene.home, undefined, 900); applyTime(+timeEl.value); });
   document.getElementById('story60').addEventListener('click', () => { cancelled = false; runIntro(); });
 
   async function beat(text, ms) {
