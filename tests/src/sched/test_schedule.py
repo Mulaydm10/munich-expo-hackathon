@@ -59,6 +59,30 @@ def test_deadline_feasibility_including_tight_dwell():
     assert result["deadline_misses"] == 0
 
 
+def test_saturated_fractional_dwell_is_robust_to_float_rounding():
+    arrive = pd.Timestamp("2026-01-10T08:50:07.123", tz="UTC")
+    depart = pd.Timestamp("2026-01-10T09:11:59.877", tz="UTC")
+    sessions = mk_sessions([
+        dict(
+            session_id="SAT",
+            site_id="S1",
+            t_arrive=arrive,
+            t_depart=depart,
+            energy_kwh=75.0 * (depart - arrive).total_seconds() / 3600.0,
+            max_power_kw=75.0,
+        ),
+    ])
+    times = pd.date_range("2026-01-10T08:45", periods=3, freq="15min", tz="UTC")
+    envelope = mk_envelope("S1", times, 100.0)
+    prices = mk_prices(times, 50.0)
+
+    sched = api.schedule(sessions, envelope, prices)
+
+    assert sched["power_kw"].sum() * 0.25 == pytest.approx(
+        sessions["energy_kwh"].iloc[0], abs=1e-6
+    )
+
+
 def test_deadline_infeasible_raises_naming_deadline():
     times = grid("2026-01-10T00:00", 8)
     sessions = mk_sessions([
@@ -186,6 +210,130 @@ def test_price_response_beats_asap_baseline():
     )
     assert optimised["unmet_kwh"] == pytest.approx(0.0, abs=1e-6)
     assert optimised["deadline_misses"] == 0
+
+
+def test_peak_term_flattens_load_and_beats_asap_peak():
+    times = grid("2026-01-10T00:00", 8)
+    prices = mk_prices(times[:-1], [20.0] * 4 + [200.0] * 4)
+    envelope = mk_envelope("S1", times[:-1], 100.0)
+    sessions = mk_sessions([
+        dict(session_id=f"V{i}", site_id="S1", t_arrive=times[0], t_depart=times[8],
+             energy_kwh=5.0, max_power_kw=10.0)
+        for i in range(4)
+    ])
+
+    asap = api.baseline(sessions, policy="asap")
+    asap_audit = api.evaluate(asap, sessions, envelope, prices, ())
+    assert asap_audit["peak_kw"] == pytest.approx(40.0, abs=1e-6)
+
+    energy_only = api.schedule(sessions, envelope, prices, peak_price_eur_per_kw=0.0)
+    energy_only_audit = api.evaluate(energy_only, sessions, envelope, prices, ())
+    assert energy_only_audit["peak_kw"] == pytest.approx(40.0, abs=1e-6)
+
+    peak_aware = api.schedule(
+        sessions,
+        envelope,
+        prices,
+        peak_price_eur_per_kw=api.DEMAND_CHARGE_EUR_PER_KW_DAY,
+    )
+    peak_audit = api.evaluate(peak_aware, sessions, envelope, prices, ())
+    assert peak_audit["peak_kw"] <= 10.0 + 1e-6
+    assert peak_audit["peak_kw"] < asap_audit["peak_kw"]
+    assert peak_audit["unmet_kwh"] == pytest.approx(0.0, abs=1e-6)
+    assert peak_audit["deadline_misses"] == 0
+    assert peak_audit["envelope_violation_kwh"] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_partial_grid_overlap_uses_bin_average_power_caps():
+    times = grid("2026-01-10T08:45", 3)
+    envelope = mk_envelope("S1", times[:-1], 100.0)
+    prices = mk_prices(times[:-1], 50.0)
+    sessions = mk_sessions([
+        dict(
+            session_id="partial",
+            site_id="S1",
+            t_arrive=pd.Timestamp("2026-01-10T08:50"),
+            t_depart=pd.Timestamp("2026-01-10T09:10"),
+            energy_kwh=18.75,
+            max_power_kw=75.0,
+        )
+    ])
+
+    scheduled = api.schedule(sessions, envelope, prices)
+
+    assert scheduled["power_kw"].max() <= 50.0 + 1e-6
+    assert scheduled["power_kw"].sum() * 0.25 == pytest.approx(18.75, abs=1e-6)
+
+
+def test_partial_grid_overlap_deadline_capacity_is_enforced():
+    times = grid("2026-01-10T08:45", 3)
+    envelope = mk_envelope("S1", times[:-1], 100.0)
+    prices = mk_prices(times[:-1], 50.0)
+    sessions = mk_sessions([
+        dict(
+            session_id="partial",
+            site_id="S1",
+            t_arrive=pd.Timestamp("2026-01-10T08:50"),
+            t_depart=pd.Timestamp("2026-01-10T09:10"),
+            energy_kwh=26.0,
+            max_power_kw=75.0,
+        )
+    ])
+
+    with pytest.raises(api.Infeasible, match="deadline"):
+        api.schedule(sessions, envelope, prices)
+
+
+def test_peak_price_zero_is_bit_identical():
+    times = grid("2026-01-10T00:00", 8)
+    prices = mk_prices(times[:-1], [20.0] * 4 + [200.0] * 4)
+    envelope = mk_envelope("S1", times[:-1], 100.0)
+    sessions = mk_sessions([
+        dict(session_id=f"V{i}", site_id="S1", t_arrive=times[0], t_depart=times[8],
+             energy_kwh=5.0, max_power_kw=10.0)
+        for i in range(4)
+    ])
+
+    default = api.schedule(sessions, envelope, prices)
+    explicit_zero = api.schedule(sessions, envelope, prices, peak_price_eur_per_kw=0.0)
+
+    pd.testing.assert_frame_equal(default, explicit_zero)
+
+
+def test_peak_price_rejects_negative_and_nan():
+    times = grid("2026-01-10T00:00", 8)
+    prices = mk_prices(times[:-1], 50.0)
+    envelope = mk_envelope("S1", times[:-1], 100.0)
+    sessions = mk_sessions([
+        dict(session_id="V", site_id="S1", t_arrive=times[0], t_depart=times[8],
+             energy_kwh=1.0, max_power_kw=10.0),
+    ])
+
+    with pytest.raises(ValueError, match="src/sched.*peak_price_eur_per_kw"):
+        api.schedule(sessions, envelope, prices, peak_price_eur_per_kw=-1.0)
+    with pytest.raises(ValueError, match="src/sched.*peak_price_eur_per_kw"):
+        api.schedule(sessions, envelope, prices, peak_price_eur_per_kw=float("nan"))
+
+
+def test_dispatch_preserves_peak_price():
+    times = grid("2026-01-10T00:00", 8)
+    prices = mk_prices(times[:-1], [20.0] * 4 + [200.0] * 4)
+    envelope = mk_envelope("S1", times[:-1], 100.0)
+    sessions = mk_sessions([
+        dict(session_id=f"V{i}", site_id="S1", t_arrive=times[0], t_depart=times[8],
+             energy_kwh=5.0, max_power_kw=10.0)
+        for i in range(4)
+    ])
+    peak_price = api.DEMAND_CHARGE_EUR_PER_KW_DAY
+    sched = api.schedule(sessions, envelope, prices, peak_price_eur_per_kw=peak_price)
+
+    event = api.ReductionEvent(call_t=times[2], notice_min=0.0, duration_min=30.0,
+                               reduction_kw=5.0)
+    amended = api.dispatch(sched, event)
+
+    assert amended.attrs["peak_price_eur_per_kw"] == pytest.approx(peak_price)
+    audit = api.evaluate(amended, sessions, envelope, prices, ())
+    assert audit["deadline_misses"] == 0
 
 
 # ---------------------------------------------------------------------------
