@@ -92,10 +92,11 @@ def test_default_event_skips_a_row_with_a_negative_firm_kw() -> None:
     mutated[-1]["firm_kw"] = -50.0
     event = api.default_reduction_event(mutated)
     assert event is not None
-    # The mutated last row is dropped entirely (not just its firm_kw), so the new last
-    # usable row is 02:00Z and the window/reduction are recomputed against it.
+    # The mutated last row is dropped entirely (not just its firm_kw), so the backed run
+    # now ends one 15-minute interval earlier, at 02:45Z, and the window truncates there
+    # rather than promising across the hole the drop left (issue #43 finding 3).
     assert event["call_t"] == "2026-10-24T22:00:00+00:00"
-    assert event["duration_min"] == pytest.approx(240.0)
+    assert event["duration_min"] == pytest.approx(285.0)
     assert event["reduction_kw"] == 96.0
 
 
@@ -105,6 +106,45 @@ def test_default_event_skips_a_row_with_a_non_finite_price() -> None:
     event = api.default_reduction_event(mutated)
     assert event is not None
     assert event["call_t"] == "2026-10-24T22:15:00+00:00"
+
+
+def test_default_event_never_promises_across_an_interval_with_no_backing() -> None:
+    """#43 finding 3. `duration_min` used to run from `call_t` to the LAST recorded
+    timestamp, whatever lay between. On a series with holes that sells capacity for
+    intervals that have no data at all -- `src/market.bid()` refuses to do exactly this,
+    and `src/fleet.to_load()` was fixed for producing the sparse grid that made it refuse.
+
+    Here 22:00Z is the call (highest price) and only 22:15Z backs it: the series then
+    jumps to 23:00Z. The old code promised 60 minutes; the window must instead truncate
+    to the 15 minutes actually backed, and `reduction_kw` must come from that run alone.
+    """
+    gappy = [
+        {"t": "2026-10-24T22:00:00+00:00", "price_eur_mwh": 41.2, "firm_kw": 96.0},
+        {"t": "2026-10-24T22:15:00+00:00", "price_eur_mwh": 39.75, "firm_kw": 90.0},
+        # 22:30Z and 22:45Z are MISSING -- the hole the old code promised across.
+        {"t": "2026-10-24T23:00:00+00:00", "price_eur_mwh": 35.1, "firm_kw": 10.0},
+    ]
+    event = api.default_reduction_event(gappy)
+    assert event is not None
+    assert event["call_t"] == "2026-10-24T22:00:00+00:00"
+    assert event["duration_min"] == pytest.approx(15.0), (
+        "the window must stop at the last backed interval, not run to the last row"
+    )
+    # 10.0 kW sits beyond the gap; letting it into the min() would understate the promise
+    # using an interval the window no longer covers.
+    assert event["reduction_kw"] == 90.0
+
+
+def test_default_event_is_none_when_no_interval_backs_any_call() -> None:
+    """A series with no two consecutive 15-minute intervals anywhere cannot open a
+    compliance window at all, so there is no honest event to build -- `None`, never a
+    fabricated one. The call screen renders its existing "no ReductionEvent" state."""
+    sparse = [
+        {"t": "2026-10-24T22:00:00+00:00", "price_eur_mwh": 41.2, "firm_kw": 96.0},
+        {"t": "2026-10-24T23:00:00+00:00", "price_eur_mwh": 35.1, "firm_kw": 120.0},
+        {"t": "2026-10-25T00:00:00+00:00", "price_eur_mwh": 28.4, "firm_kw": 120.0},
+    ]
+    assert api.default_reduction_event(sparse) is None
 
 
 def test_default_event_dedupes_a_repeated_timestamp() -> None:
@@ -146,6 +186,23 @@ VALID_EVENT = {
     "duration_min": 240.0,
     "reduction_kw": 1000.0,
 }
+
+
+def test_a_non_utc_offset_is_rejected() -> None:
+    """#43 finding 4. `+02:00` parses as tz-aware, so it used to pass the gate and be
+    POSTed verbatim; `src/service` then `tz_convert`s it to UTC. The arithmetic was
+    right, but the coercion was invisible at both ends, which `contracts/CONVENTIONS.md`
+    forbids. This lane has chosen not to rewrite `call_t`, so the offset is rejected
+    rather than silently normalised -- the same treatment a naive timestamp gets."""
+    event = dict(VALID_EVENT, call_t="2026-10-25T18:00:00+02:00")
+    assert api.reduction_event_valid(event) is False
+
+
+def test_a_zero_offset_spelled_z_is_still_valid() -> None:
+    """The rejection is of a non-ZERO offset, not of a particular spelling: `Z` and
+    `+00:00` are the same instant and both are the wire shape."""
+    assert api.reduction_event_valid(dict(VALID_EVENT, call_t="2026-10-25T16:00:00Z"))
+    assert api.reduction_event_valid(dict(VALID_EVENT, call_t="2026-10-25T16:00:00+00:00"))
 
 
 def test_a_well_formed_event_is_valid() -> None:
