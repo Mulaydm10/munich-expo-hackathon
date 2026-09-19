@@ -280,6 +280,10 @@ table.list tbody tr:hover td { background: #111621; }
 .warn-item { border-top: 1px solid var(--line-soft); padding: 9px 0; font-size: 15px; }
 .warn-item:first-child { border-top: 0; }
 .warn-item .code { font-family: var(--mono); font-size: 12px; color: var(--ink-faint); }
+.assumption-key { color: var(--ink); }
+.assumption-value { overflow-wrap: anywhere; margin-top: 3px; }
+.assumption-value.missing { color: var(--ink-faint); }
+.assumption-value + .faint { overflow-wrap: anywhere; margin-top: 4px; }
 
 /* dialogs */
 dialog {
@@ -303,12 +307,13 @@ label.field input, label.field select {
 }
 label.field input:focus, label.field select:focus { outline: 2px solid var(--cyan); outline-offset: 1px; }
 .sentence { font-size: 19px; line-height: 1.45; background: var(--navy-800); border-left: 3px solid var(--blue); padding: 13px 16px; border-radius: 0 4px 4px 0; }
+.error { color: var(--red); margin: 0; }
 progress { width: 100%; height: 8px; }
 
 /* copilot */
 #copilot-btn { position: fixed; right: 22px; bottom: 22px; z-index: 50; }
-.workspace ~ #copilot-btn { right: 520px; }
-body:has(.workspace) #copilot-btn { right: 520px; }
+.workspace ~ #copilot-btn { left: 390px; right: auto; }
+body:has(.workspace) #copilot-btn { left: 390px; right: auto; }
 .mic {
   width: 62px; height: 62px; border-radius: 50%;
   background: var(--navy-600); border: 1px solid var(--line);

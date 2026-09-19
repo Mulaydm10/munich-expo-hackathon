@@ -200,8 +200,18 @@ export function runAutopilot(app) {
     { label: 'Depot load forming', ms: 30000, run: () => { app.play(true); app.say('Baseline charging demand builds toward the evening peak.'); } },
     { label: 'Baseline vs optimised peak', ms: 40000, run: () => { app.goToPeak(); app.say(`Baseline peak ${app.scn.totals.peak_kw_baseline} kW, optimised ${app.scn.totals.peak_kw_optimised} kW.`); } },
     { label: 'Forecast quality', ms: 34000, run: () => { app.highlight('forecast'); app.say(`Forecast accuracy ${api.fmt(app.scn.forecast_accuracy.accuracy_pct, '%')} on portfolio load over ${api.fmt(app.scn.forecast_accuracy.history_days, 'days')}.`); } },
-    { label: 'Dispatch request', ms: 46000, run: () => { app.openDispatch(true); app.say('Grid operator dispatch request is sent to the backend.'); } },
-    { label: 'Pooling', ms: 34000, run: () => { app.highlight('pooling'); app.say('Firm flexibility per site rises as sites are pooled.'); } },
+    { label: 'Dispatch request', ms: 46000, run: () => {
+      app.openDispatch(true, { notice_min: 10, duration_min: 30, reduction_kw: 100 });
+      app.say('Grid operator dispatch request is sent to the backend.');
+    } },
+    { label: 'Pooling', ms: 34000, run: () => {
+      app.highlight('pooling');
+      if (!app.poolPoints.length) {
+        const warning = app.poolWarnings[0];
+        const detail = warning?.message || warning?.detail || 'the backend returned no pooling result';
+        app.say(`Pooling result is not available for this scenario: ${detail}`);
+      } else app.say('Firm flexibility per site rises as sites are pooled.');
+    } },
     { label: 'Evidence & limitations', ms: 40000, run: () => { app.highlight('evidence'); app.say('Real public data for load, weather, price and locations. Sessions are synthesized.'); } },
   ];
   let i = 0, timer = null, paused = false;

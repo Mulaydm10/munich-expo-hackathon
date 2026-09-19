@@ -23,42 +23,16 @@ window.flexgrid = app; // handy for the demo console
   const [health, scn] = await Promise.all([
     api.getHealth(), api.getScenario(),
   ]);
-  const [ts, mapBody, pool, assumptions] = await Promise.all([
-    api.getTimeseries(scn.id), api.getMap(scn.id), api.getPooling(scn.id), api.getAssumptions(),
-  ]);
-  const mapRows = mapBody.sites;
-  app.scn = scn; app.rows = ts.rows; app.mapRows = mapRows; app.assumptions = assumptions;
-
-  $('m-date').textContent = api.berlinDate(ts.rows[0].t);
-  $('m-sites').textContent = `${scn.spec.n_sites ?? api.MISSING} · ${scn.spec.region || 'national'}`;
-  $('m-status').textContent = scn.cached ? 'cached' : scn.status;
   $('m-health').textContent = health.ok ? `ok (${health.backend})` : 'unavailable';
-  $('site-count').textContent = `${mapRows.length} sites`;
-
-  fillScenario(scn);
-  renderWarnings(scn.warnings);
-  renderAssumptions(assumptions);
-  renderSiteList(mapRows.slice(0, 14));
-  app.poolPoints = pool.points;
-  if (!app.poolPoints.length && pool.warnings.length) {
-    $('p-pooling').appendChild(el('p', { className: 'warn-item', text: `${pool.warnings[0].message || 'Pooling data unavailable'} — ${api.MISSING}` }));
-  }
-  drawPooling($('pooling'), pool.points);
 
   // network map
   app.map = new NetworkMap($('map'), { onSelect: (s) => selectSite(s) });
-  app.map.setData(mapRows);
   $('v-de').addEventListener('click', () => setMapZoom('de'));
   $('v-muc').addEventListener('click', () => setMapZoom('muc'));
 
   // cursor range
   const cur = $('cursor');
-  cur.max = String(app.rows.length - 1);
   cur.addEventListener('input', () => { setCursor(+cur.value); play(false); });
-
-  // peak cursor default: the baseline peak interval
-  app.peakIdx = app.rows.reduce((b, r, i) => (r.load_kw_baseline != null && r.load_kw_baseline > (app.rows[b].load_kw_baseline ?? -1) ? i : b), 0);
-  setCursor(app.peakIdx);
 
   // mini digital twin
   try {
@@ -66,6 +40,8 @@ window.flexgrid = app; // handy for the demo console
     if (mod.webglAvailable()) app.twin = new mod.DepotScene($('twin'), { mode: 'mini', orbit: true });
   } catch (e) { console.warn('twin unavailable', e.message); }
 
+  cur.max = '0';
+  await loadScenario(scn);
   app.dispatchFlow = new DispatchFlow(app);
   app.dispatchFlow.runWith = async (prefill) => { app.dispatchFlow.open(prefill); return app.dispatchFlow.run(); };
   app.copilot = new Copilot(app);
@@ -91,6 +67,49 @@ window.flexgrid = app; // handy for the demo console
 })();
 
 /* ---------- panels ---------- */
+async function loadScenario(scn) {
+  const [ts, mapBody, pool, assumptions] = await Promise.all([
+    api.getTimeseries(scn.id), api.getMap(scn.id), api.getPooling(scn.id), api.getAssumptions(),
+  ]);
+  const mapRows = mapBody.sites;
+  app.scn = scn; app.rows = ts.rows; app.mapRows = mapRows; app.assumptions = assumptions;
+  app.selectedSite = null;
+  app.dispatchResult = null;
+  app.dispatchEvent = null;
+
+  $('m-date').textContent = api.berlinDate(ts.rows[0].t);
+  $('m-sites').textContent = `${scn.spec.n_sites ?? api.MISSING} · ${scn.spec.region || 'national'}`;
+  $('m-status').textContent = scn.cached ? 'cached' : scn.status;
+  $('site-count').textContent = `${mapRows.length} sites`;
+  $('p-dispatch').style.display = 'none';
+  clear($('p-dispatch'));
+
+  fillScenario(scn);
+  renderWarnings(scn.warnings);
+  renderAssumptions(assumptions);
+  renderSiteList(mapRows.slice(0, 14));
+  app.map.setData(mapRows);
+
+  $('p-pooling').querySelectorAll('[data-role="pool-warning"]').forEach((node) => node.remove());
+  app.poolPoints = pool.points;
+  app.poolWarnings = pool.warnings;
+  if (!app.poolPoints.length && pool.warnings.length) {
+    $('p-pooling').appendChild(el('p', {
+      className: 'warn-item', 'data-role': 'pool-warning',
+      text: `${pool.warnings[0].message || 'Pooling data unavailable'} — ${api.MISSING}`,
+    }));
+  }
+  drawPooling($('pooling'), pool.points);
+
+  const cur = $('cursor');
+  cur.max = String(Math.max(0, app.rows.length - 1));
+  app.peakIdx = app.rows.reduce((b, r, i) => (
+    r.load_kw_baseline != null && r.load_kw_baseline > (app.rows[b].load_kw_baseline ?? -1) ? i : b
+  ), 0);
+  setCursor(app.peakIdx);
+  frame(performance.now());
+}
+
 function fillScenario(scn) {
   const fa = scn.forecast_accuracy, sc = scn.scorecard, tt = scn.totals;
   const set = (id, v) => { $(id).textContent = v; };
@@ -142,9 +161,8 @@ function renderAssumptions(list) {
   const target = $('assume-list');
   clear(target);
   list.forEach((a) => target.appendChild(el('div', { className: 'warn-item' },
-    el('div', { className: 'kv' },
-      el('span', { className: 'k mono', text: a.key }),
-      el('span', { className: a.value == null ? 'v missing' : 'v', text: a.value == null ? api.MISSING : `${a.value}${a.unit ? ` ${a.unit}` : ''}` })),
+    el('div', { className: 'assumption-key mono', text: a.key }),
+    el('div', { className: a.value == null ? 'assumption-value missing' : 'assumption-value', text: a.value == null ? api.MISSING : `${a.value}${a.unit ? ` ${a.unit}` : ''}` }),
     el('div', { className: 'faint', text: `${a.source || 'no source connected'} — ${a.note || ''}` }))));
 }
 
@@ -245,7 +263,10 @@ function wireUI() {
   $('scn-cancel').addEventListener('click', () => $('scenario-dlg').close());
   $('scn-run').addEventListener('click', runScenario);
 
-  $('btn-warn').addEventListener('click', () => $('p-warnings').scrollTop = 0);
+  $('btn-warn').addEventListener('click', () => {
+    $('p-warnings').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    publicApi.highlight('warnings');
+  });
 
   // modes
   const setMode = (story) => {
@@ -313,10 +334,7 @@ async function runScenario() {
       $('scn-bar').value = progress;
       $('scn-pct').textContent = Math.round(progress * 100);
     });
-    app.scn = res;
-    fillScenario(res);
-    renderWarnings(res.warnings);
-    $('m-status').textContent = res.cached ? 'cached' : 'complete';
+    await loadScenario(res);
     location.hash = `scenario=${res.id}`;
     dlg.close();
   } catch (e) {
@@ -337,14 +355,23 @@ const publicApi = {
   play,
   goToPeak() { setCursor(app.peakIdx); play(false); },
   highlight(what) {
-    const el = { forecast: 'p-forecast', pooling: 'p-pooling', evidence: 'evidence' }[what];
+    const el = { forecast: 'p-forecast', pooling: 'p-pooling', evidence: 'evidence', warnings: 'p-warnings' }[what];
     if (!el) return;
     const node = $(el);
     node.style.transition = 'box-shadow 400ms';
     node.style.boxShadow = '0 0 0 2px var(--cyan)';
     setTimeout(() => { node.style.boxShadow = 'none'; }, 3400);
   },
-  openDispatch(auto) { app.dispatchFlow.open({ call_t: new Date(app.rows[app.peakIdx].t).toISOString() }); if (auto) setTimeout(() => app.dispatchFlow.run(), 2200); },
+  get poolPoints() { return app.poolPoints || []; },
+  get poolWarnings() { return app.poolWarnings || []; },
+  openDispatch(auto, prefill = {}) {
+    app.dispatchFlow.open({
+      call_t: new Date(app.rows[app.peakIdx].t).toISOString(),
+      notice_min: 10, duration_min: 30, reduction_kw: 100,
+      ...prefill,
+    });
+    if (auto) setTimeout(() => app.dispatchFlow.run(), 2200);
+  },
   say(text) { $('story-step').textContent = text; },
   storyStep(label, i, n) { $('story-step').textContent = label ? `story ${i}/${n} — ${label}` : ''; },
   setAlert(on) { document.body.classList.toggle('alerting', on); },

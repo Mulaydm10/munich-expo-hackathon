@@ -20,6 +20,7 @@ export class DispatchFlow {
           field('notice_min', 'notice_min'),
           field('duration_min', 'duration_min'),
           field('reduction_kw', 'reduction_kw')),
+        el('p', { className: 'error', id: 'derror', style: 'display:none' }),
         el('p', { className: 'sentence', id: 'dsentence' }),
         el('p', { className: 'faint', text: 'Payload contains exactly these four fields. Vehicles that would miss a departure deadline are not curtailed.' })),
       el('div', { className: 'dfoot' },
@@ -35,8 +36,9 @@ export class DispatchFlow {
 
   event() {
     const values = this.inputs();
+    const call = values.call_t ? new Date(values.call_t) : null;
     return {
-      call_t: values.call_t ? new Date(values.call_t).toISOString() : '',
+      call_t: call && !Number.isNaN(call.getTime()) ? call.toISOString() : '',
       notice_min: Number(values.notice_min || 0),
       duration_min: Number(values.duration_min || 0),
       reduction_kw: Number(values.reduction_kw || 0),
@@ -51,26 +53,48 @@ export class DispatchFlow {
 
   open(prefill = {}) {
     const values = {
-      call_t: prefill.call_t || '',
-      notice_min: prefill.notice_min ?? '',
-      duration_min: prefill.duration_min ?? '',
-      reduction_kw: prefill.reduction_kw ?? '',
+      call_t: prefill.call_t || this.app.rows[this.app.cursor]?.t || '',
+      notice_min: prefill.notice_min ?? 10,
+      duration_min: prefill.duration_min ?? 30,
+      reduction_kw: prefill.reduction_kw ?? 100,
     };
     for (const [name, value] of Object.entries(values)) {
       const input = this.dlg.querySelector(`input[name="${name}"]`);
       if (input) input.value = name === 'call_t' && value ? value.slice(0, 16) : value;
     }
+    this.dlg.querySelector('#derror').style.display = 'none';
     this.sentence();
     this.dlg.showModal();
   }
 
   async run() {
     const event = this.event();
+    const error = !event.call_t ? 'Call time is required.'
+      : !Number.isFinite(event.notice_min) || event.notice_min < 0 ? 'Notice must be at least 0 minutes.'
+        : !Number.isFinite(event.duration_min) || event.duration_min < 15 ? 'Duration must be at least 15 minutes.'
+          : !Number.isFinite(event.reduction_kw) || event.reduction_kw <= 0 ? 'Reduction must be greater than 0 kW.'
+            : '';
+    if (error) {
+      const node = this.dlg.querySelector('#derror');
+      node.textContent = error;
+      node.style.display = 'block';
+      return null;
+    }
     this.dlg.close();
     const app = this.app;
     app.setAlert(true);
     app.statusNote('dispatching…');
-    const result = await api.dispatch(app.scn.id, event);
+    let result;
+    try {
+      result = await api.dispatch(app.scn.id, event);
+    } catch (e) {
+      app.statusNote('dispatch failed');
+      app.setAlert(false);
+      const panel = document.getElementById('p-dispatch');
+      panel.style.display = 'block';
+      panel.replaceChildren(el('p', { className: 'warn-item', text: e.message || 'Dispatch failed.' }));
+      return null;
+    }
     app.applyDispatch(result, event);
     if (app.twin) {
       app.twin.shiftPulses(0.7);

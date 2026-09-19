@@ -98,6 +98,7 @@ export class Copilot {
       if (/\b(yes|approve|confirm|do it|go ahead)\b/.test(q)) {
         const ev = this.pending; this.pending = null;
         const res = await app.dispatchFlow.runWith(ev);
+        if (!res) return { text: 'Dispatch was not sent. Check the dispatch panel for the backend message.', source: null };
         return {
           text: `Dispatched. Worst-interval delivery ${api.fmt(res.delivered_reduction_kw_worst_interval, 'kW')} against ${api.fmt(res.promised_reduction_kw, 'kW')} promised, shortfall ${api.fmt(res.shortfall_kw, 'kW')}.`,
           source: 'dispatch.delivered_reduction_kw_worst_interval',
@@ -124,7 +125,7 @@ export class Copilot {
     }
     if (/ready|deadline|departure/.test(q)) {
       return {
-        text: `Deadline misses ${sc.deadline_misses}, unmet energy ${api.fmt(sc.unmet_energy_kwh, 'kWh', 1)}, envelope violations ${sc.envelope_violations}, infeasible sites ${sc.infeasible_sites}. On this scenario every scheduled vehicle meets its energy and deadline.`,
+        text: `Deadline misses ${api.fmt(sc.deadline_misses)}, unmet energy ${api.fmt(sc.unmet_energy_kwh, 'kWh', 1)}, envelope violations ${api.fmt(sc.envelope_violations, 'kWh', 1)}, infeasible sites ${api.fmt(sc.infeasible_sites)}. On this scenario every scheduled vehicle meets its energy and deadline.`,
         source: 'scorecard',
       };
     }

@@ -41,14 +41,20 @@ export function drawMain(canvas, state) {
       .forEach((v) => { if (v != null && v > maxV) maxV = v; });
   });
   if (dispatch) dispatch.rows.forEach((r) => { if (r.load_kw_committed != null) maxV = Math.max(maxV, r.load_kw_committed); });
-  const top = Math.ceil((maxV * 1.1) / 200) * 200;
+  const tickSteps = [50, 100, 200, 250, 500, 1000];
+  const rawTop = maxV * 1.1;
+  const tickStep = tickSteps.find((step) => {
+    const candidateTop = Math.max(step, Math.ceil(rawTop / step) * step);
+    return plotH * step / candidateTop >= 28;
+  }) || tickSteps[tickSteps.length - 1];
+  const top = Math.max(tickStep, Math.ceil(rawTop / tickStep) * tickStep);
   const x = (i) => padL + (plotW * i) / (rows.length - 1);
   const y = (v) => padT + plotH - (plotH * v) / top;
 
   // grid + y axis
   ctx.font = '13px ui-sans-serif, system-ui, sans-serif';
   ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
-  for (let v = 0; v <= top; v += 200) {
+  for (let v = 0; v <= top; v += tickStep) {
     ctx.strokeStyle = C.gridline; ctx.lineWidth = 1;
     ctx.beginPath(); ctx.moveTo(padL, Math.round(y(v)) + 0.5); ctx.lineTo(w - padR, Math.round(y(v)) + 0.5); ctx.stroke();
     ctx.fillStyle = C.faint; ctx.fillText(v.toLocaleString('en-GB'), padL - 10, y(v));
