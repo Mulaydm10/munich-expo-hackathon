@@ -312,8 +312,9 @@ progress { width: 100%; height: 8px; }
 
 /* copilot */
 #copilot-btn { position: fixed; right: 22px; bottom: 22px; z-index: 50; }
-.workspace ~ #copilot-btn { left: 390px; right: auto; }
-body:has(.workspace) #copilot-btn { left: 390px; right: auto; }
+#copilot-btn.inbar { position: static; }
+#copilot-btn.inbar .mic { width: 40px; height: 40px; }
+#copilot-btn.inbar .mic .ring { width: 16px; height: 16px; }
 .mic {
   width: 62px; height: 62px; border-radius: 50%;
   background: var(--navy-600); border: 1px solid var(--line);

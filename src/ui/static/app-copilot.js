@@ -28,7 +28,8 @@ export class Copilot {
     const btn = el('div', { id: 'copilot-btn' },
       el('div', { className: 'mic', role: 'button', tabindex: '0', 'aria-label': 'Open copilot (text mode)' },
         el('div', { className: 'ring' })));
-    document.body.appendChild(btn);
+    const bar = document.querySelector('.cmdbar');
+    if (bar) { btn.classList.add('inbar'); bar.appendChild(btn); } else document.body.appendChild(btn);
 
     this.panel = el('div', { className: 'copilot' },
       el('div', { className: 'chead' },
