@@ -258,7 +258,7 @@ function wireUI() {
     $('t-band').setAttribute('aria-pressed', String(app.toggles.band));
   });
 
-  $('btn-dispatch').addEventListener('click', () => app.dispatchFlow.open({ call_t: new Date(app.rows[app.peakIdx].t).toISOString() }));
+  $('btn-dispatch').addEventListener('click', () => app.dispatchFlow.open({ call_t: new Date(app.rows[app.cursor].t).toISOString() }));
   $('btn-scenario').addEventListener('click', () => $('scenario-dlg').showModal());
   $('scn-cancel').addEventListener('click', () => $('scenario-dlg').close());
   $('scn-run').addEventListener('click', runScenario);
@@ -304,7 +304,7 @@ function wireUI() {
   addEventListener('keydown', (e) => {
     if (e.target.matches('input, select, textarea')) return;
     if (e.code === 'Space') { e.preventDefault(); play(); }
-    if (e.key === 'd') { e.preventDefault(); app.dispatchFlow.open({ call_t: new Date(app.rows[app.peakIdx].t).toISOString() }); }
+    if (e.key === 'd') { e.preventDefault(); app.dispatchFlow.open({ call_t: new Date(app.rows[app.cursor].t).toISOString() }); }
     if (e.key === 'ArrowRight') setCursor(app.cursor + 1);
     if (e.key === 'ArrowLeft') setCursor(app.cursor - 1);
   });
