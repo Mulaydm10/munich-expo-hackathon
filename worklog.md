@@ -190,3 +190,44 @@ Everything below is on `bot/join-real-lane-split` for the human to merge — des
   rename to `merged/11-dd690097` and `merged/48-6d8d6dde`. Live `claim/*` refs are now exactly
   `claim/1` (canary) and `claim/state` (the lock), which is the correct steady state.
 - Suite after all of it: **642 passed, 1 xfailed**.
+
+## 2026-09-19/20 — mac worker (merge run: eleven PRs, and the CI outage diagnosed)
+
+- **CI is down repo-wide, and it is a billing problem.** Every Actions job since 2026-09-18 fails
+  in 3-4 seconds with **zero steps executed**. The run annotation says it outright: *"The job was
+  not started because recent account payments have failed or your spending limit needs to be
+  increased."* Actions is enabled and the workflows are fine — this is fixed only at
+  <https://github.com/settings/billing>. Recording the diagnosis because the symptom (two red
+  checks on every PR) reads like a broken protocol check and is not one. The earlier guess in this
+  log that #65's red `lane`/`resolve` was a missing claim ref was **wrong**; same billing cause.
+- **Merged, in order, each pinned with `--match-head-commit`:** #65 (`docs/HANDOFF.md`), #68 (live
+  SMARD + DWD fetch), #78, #70, #72, #74, #66, #79. Suite 642 -> **687 passed, 1 xfailed**. `main`
+  is `264ad1e`.
+- **#76 was merged knowing it was red.** It failed `test_dispatch` and `test_warnings` on its own
+  branch, not just against main; I said so and Dhruv chose to merge anyway. It put two failures on
+  `main` until #74 — which carries its own version of the same session-energy clamp — fixed them.
+  Worth keeping: two PRs solved the same problem independently, and merging the weaker one first
+  broke main for a while. Check for an overlapping fix before merging a red PR.
+- **Ordered merging was simulated before it was done.** #70 -> #72 -> #74 were merged locally onto
+  a detached HEAD and the full suite run at each step (668 passed) before any real merge; #66 was
+  re-simulated afterwards against the moved main (673). Cheap, and the only verification available
+  while CI is dead.
+- **#67 closed as superseded, not merged.** #68 had already carried the identical
+  `_decimal_comma_to_float` thousands-separator fix plus its regression test, extended with a
+  missing-value mask. `git cherry main origin/fix/50-...` printed `-`, i.e. patch-equivalent. The
+  branch also conflicted by then. Closing beat forcing a merge.
+- **#43 findings 2, 3 and 4 fixed (#66).** Finding 3 is the interesting one: `duration_min` ran from
+  `call_t` to the last recorded timestamp regardless of holes, so the event promised capacity over
+  intervals with no data — a 5-hour promise backed by 7 rows where a dense 15-minute grid needs 21.
+  The window is now truncated to the backed run rather than refused outright, because refusing would
+  re-disable the button #40 existed to revive. **The fixture itself was part of the defect**: its
+  spacings were 15/45/60/60/60/60, which is why the bug survived review. Densified to a real 21-row
+  grid preserving every anchor value, so the DST test still spans the fallback and stays meaningful.
+- **Nothing merged in this run had a qualifying human reviewer.** Protocol says nobody self-merges
+  and an automated reviewer does not count; all of it went in on Dhruv's explicit instruction. Not a
+  complaint — but "merged" must not be read as "reviewed" when this work is next audited.
+- **The deadline moved.** Dhruv said so on 2026-09-20 and did not give the new date. `COMPETITION.md`
+  and #65's Devpost note are both stale as of now. Nobody should plan against either, and nobody
+  should guess — `STATE.md`'s Deadline section is rewritten to say exactly that.
+- **Six claim refs are still held on merged PRs** (`claim/50/69/71/73/75/77`), the same leftover
+  pattern released earlier for `claim/11` and `claim/48`. Not released this session; noted in STATE.

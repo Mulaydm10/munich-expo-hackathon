@@ -6,15 +6,21 @@ disagree about what is true *now*, **STATE wins** — the worklog only explains 
 Note for bus workers: this is the *project* snapshot. The bus's lane/claim state lives in
 `docs/STATE.md` and is written only under the `claim/state` lock. Two different files, on purpose.
 
-Last updated: 2026-09-18 midday (mac worker; design node returned 2026-09-18 to file the handoff
-brief #65, otherwise silent since 2026-09-05T20:44Z)
+Last updated: 2026-09-20 early morning (mac worker; the design node is ACTIVE again and has been
+shipping steadily since 2026-09-18 — #65, #68, #70, #72, #74, #76, #78, #79)
 
 ## Deadline + time remaining
-**Sun 20 Sep 2026, 17:00 Europe/Berlin (CEST)** — **two days out.** PR #65 reports Devpost's
-dates page now states this explicitly, which would resolve `Q-0003` in favour of the reading we
-already planned against. That PR is **not merged** (red CI, see In flight), so `COMPETITION.md`
-still carries the contradiction; treat the 17:00 reading as confirmed-but-unlanded. Do not restate
-the date anywhere else.
+**UNKNOWN — the deadline has MOVED and the new one is not recorded anywhere yet.**
+
+On 2026-09-20 Dhruv said the deadline changed and that there is no longer time pressure. He did not
+state the new date, and nobody has asked him for it. So:
+
+- `COMPETITION.md` still says **Sun 20 Sep 2026, 17:00 CEST**, and #65 landed the note that Devpost
+  stated that explicitly. **Both are now STALE.** Do not plan against either.
+- **Ask Dhruv for the new date before doing anything that depends on it**, and do not infer one
+  from a Devpost page, a countdown or this file. `CLAUDE.md`'s hard rule applies: never invent an
+  event fact — a wrong assumed deadline is exactly the class of error that loses a submission.
+- `Q-0003` is therefore **re-opened in substance**, whatever its recorded status says.
 
 ## Done
 - Kickoff resolved the two blockers: `VISION.md` (thesis: FlexGrid) and `COMPETITION.md` (event
@@ -30,17 +36,18 @@ the date anywhere else.
   lane issues are claimable and the pinned Board is #16.
 
 ## In flight
-`main` is `901d58e`; `pytest tests -q` is **643 passed, 1 xfailed** (verified 2026-09-18 midday,
-after the merges below).
+`main` is `264ad1e`; `pytest tests -q` is **687 passed, 1 xfailed** (verified 2026-09-20, venv
+python — see Working notes).
 
-- **PR #66** (`fix/43-ui-hit-test-and-adjust-form`) — #43 finding 2, the canvas hit-test scaled by
-  the border box. Lane-confined to `src/ui`, suite green. **Awaiting a qualifying human reviewer.**
-- **PR #65** (`design/handoff-2026-09-18`) — `docs/HANDOFF.md`, a cold-start takeover brief from the
-  design node. Docs-only, but `lane` and `resolve` both **FAIL in ~2s**, which looks like a protocol
-  check (a design PR with no claim ref) rather than a test failure. Not diagnosed yet. This is the
-  most valuable unmerged thing in the repo — it is the only document that records the *negatives*.
-- **PR #4** (`claim/1`) — the standing canary. **Never merge it**; the protocol depends on it
-  staying open.
+- **Nothing is in flight.** Every PR that was open has been merged or closed. The only open PR is
+  **#4** (`claim/1`), the standing canary — **never merge it**; the protocol depends on it staying
+  open.
+- **CI CANNOT RUN AT ALL, repo-wide.** Every GitHub Actions job since 2026-09-18 fails in 3–4s with
+  zero steps executed. The annotation is explicit: *"The job was not started because recent account
+  payments have failed or your spending limit needs to be increased."* This is an account billing
+  problem, not a code or workflow problem, and it is fixed only at
+  <https://github.com/settings/billing>. **Until it is fixed, every merge is unverified by CI** —
+  run `pytest tests -q` locally and say so in the PR.
 
 ## What is true now
 - **All nine lanes are merged and the app runs.** `src/service` owns the FastAPI app; before
@@ -60,61 +67,93 @@ after the merges below).
   uvicorn 0.53.0); suite unchanged at 642. `requirements-dev.txt` itself was **not** edited — it is
   canary-gated. pytest 9, pandas 3 and pyarrow 25 are all **outside** its ranges and would each need
   a design PR plus pre- and post-merge canaries; none was attempted two days out.
+- **2026-09-19/20 session: eleven PRs merged, all pinned with `--match-head-commit`.** #61, #62,
+  #64 (earlier), then **#65** (`docs/HANDOFF.md`), **#68** (live SMARD + DWD fetch, +10.7k lines),
+  **#70** (envelope grouping: `_build_envelope` was O(sites x rows) and 10k sites never finished),
+  **#72** (demand-charge peak term in the schedule LP), **#74** (portfolio-coordinated scheduling
+  + portfolio forecast), **#76**, **#78** (portfolio forecast split to sites by slot share) and
+  **#79** (cinematic landing + simulator UI on live data). Suite 619 -> **687**.
+- **#76 was merged while knowingly red** and briefly left `main` with 2 failing service tests
+  (`test_dispatch`, `test_warnings`). #74's own version of the same energy clamp fixed them; `main`
+  has been green since. Recorded because a merged PR here is not evidence of a green one.
+- **#66 merged** — #43 findings 2, 3 and 4 (`src/ui`). #67 was **closed as superseded**: #68 had
+  already carried the same `_decimal_comma_to_float` fix, verified patch-equivalent with
+  `git cherry`.
+- **No PR in this run had a qualifying human reviewer.** The protocol says nobody self-merges and
+  an automated reviewer does not qualify; these were merged on Dhruv's explicit instruction. Do not
+  read "merged" as "reviewed".
 - **`ReductionEvent` is finally specified** in `contracts/src/sched.md` (#52). It had been a
   documented GUESS that three lanes were built on.
 
 ## The data situation — read before writing any demo
-`data/raw/` is **EMPTY**. The only real data in this repo is one Bundesnetzagentur charge-point
-registry excerpt. Every time series is a hand-authored fixture stamped `# SYNTHETIC FIXTURE`,
-and `fetch()` still raises `NotImplementedError` for every source. **The engine is real; its
-inputs are invented.** That is fine mid-build and must never be shown to a judge as measured
-German grid data.
+**This changed materially on 2026-09-18 and the old warning no longer applies verbatim.**
 
-Two different situations, do not conflate them:
-- **Charging sessions are synthetic by necessity.** Nobody publishes them; the organizers hand
-  out a sample only at the on-site briefing (`Q-0007`). This is standard practice, not a gap.
-- **Prices, load, weather and carbon are synthetic by gap** — and that gap is closable. SMARD's
-  `chart_data` API is confirmed live and needs **no key**. This is the highest-value next move.
+`fetch()` is now **wired for all five sources** — `charge_points`, `smard_load`, `epex_day_ahead`,
+`generation_mix`, `dwd_weather` (`_FETCH_WIRED`, #68). The parsers were rewritten against real
+export shapes, and `tests/src/data/fixtures/` now holds genuine `smard_real_*.csv` and
+`dwd_real_*` files alongside the synthetic ones.
 
-`capacity_revenue_eur` is priced off a **synthetic balancing table** (decided #51: no
-regelleistung.net account, no ENTSO-E token). That is the revenue line the pitch leads with, so
-`DEMO-0001` must say so rather than let a judge assume it is measured.
+**But `data/raw/` is still EMPTY — nobody has actually run `fetch()`.** So at this instant every
+number the app can show is still fixture-derived. The difference from before is that the gap is now
+one command wide rather than a body of unwritten code:
+
+```sh
+python3 -c "from datetime import date; from src.data import api; api.fetch('smard_load', start=date(...), end=date(...))"
+```
+
+**Run it, then re-check the demo figures.** Until someone does, do not describe any figure as
+measured German grid data.
+
+Still true, and unchanged:
+- **Charging sessions are synthetic by necessity.** Nobody publishes them; the organizers hand out
+  a sample only at the on-site briefing (`Q-0007`). Standard practice, not a gap.
+- `capacity_revenue_eur` is priced off a **synthetic balancing table** (decided #51: no
+  regelleistung.net account, no ENTSO-E token). That is the revenue line the pitch leads with, so
+  any demo script must say so rather than let a judge assume it is measured.
 
 ## Blocked
 
-- `Q-0003` (exact deadline) and `Q-0004` (solo vs 2–6 team) need an organizer answer. No organizer
-  contact may be made without the Main Agent's explicit authorization.
+- **`Q-0003` (exact deadline) is live again** — Dhruv says the date moved and has not said to what.
+  Ask him; do not infer it. `Q-0004` (solo vs 2–6 team) still needs an organizer answer. No
+  organizer contact may be made without the Main Agent's explicit authorization.
 - Organizers' sample charging dataset is only handed out at the on-site briefing (`Q-0007`). Nothing
   in the build depends on it, by design.
 - **`Q-0008`: participation mode is unset and no attendee ticket is held.** Human-only, and unlike
   the other open questions it is an action rather than an answer — tickets can sell out, so its
-  real deadline is unknown and earlier than the 20th. Nothing in the build depends on it; the right
-  to submit does.
+  real deadline is unknown. Nothing in the build depends on it; the right to submit does. (The
+  "earlier than the 20th" framing this bullet used to carry is void — see Deadline above.)
 
 ## Next intended step
-**Highest value: wire `fetch()` for SMARD.** No credential needed. It turns the pitch from
-"here is our model" into "here is Munich on a real day, with real prices, and here is what the
-flexibility was worth" — same code, far stronger claim. **The five parser gaps in #50 must be
-fixed as part of that work, not after it**: the parsers currently accept the synthetic fixture
-shape only (thousands separators, DWD column names, invented station ids, and SMARD headers that
-carry a resolution qualifier after the unit), so the first real file would parse to nothing,
-silently.
+**Run `fetch()` and put real German data through the engine.** The code is wired (#68); nobody has
+executed it, so `data/raw/` is empty. This is a command and a verification pass, not a build — and
+it is still the single highest-value move, because it turns "here is our model" into "here is
+Munich on a real day, with real prices".
 
 Then, in order:
-1. **#43** (p0, `src/ui`) — **partly closed.** Finding 2 (border-box hit-testing) is fixed in
-   PR #66. Finding 1 remains and is the `xfail`: `reduction_event_input` is read at
-   `src/ui/api.py:651` and produced nowhere in `src/`. Note what closing it actually costs —
-   `tests/integration/test_no_dead_context_keys.py`'s docstring records that **`src/service` never
-   calls `src.ui.render()` from any HTTP route at all**, so there is no HTML-serving glue to hang
-   the route on. Finding 1 is therefore not a bug fix but the missing service -> ui layer, and #65's
-   handoff brief puts UI/demo/voice out of scope for the backend stretch. Findings 3 (capacity
-   promised across gappy intervals) and 4 (non-UTC offsets) are untouched and are ordinary fixes.
-2. **`DEMO-0001`** — still no scenario. No longer blocked; write it **and actually run it**, and
-   state plainly which figures are synthetic.
-3. ~~**#48** service follow-ups~~ (merged as #61), **#44** market input-validation (filed unverified — verify before
-   fixing), **#31** voice, then p2s #35 / ~~#11~~ (merged as #62) / #29.
+1. **Confirm the new deadline with Dhruv** before sequencing anything else.
+2. **`DEMO-0001`** — still no scenario written. Write it **and actually run it**, stating plainly
+   which figures are synthetic. `CLAUDE.md` makes a broken demo outrank new features.
+3. **#43 finding 1** (the repo's one `xfail`) — `reduction_event_input` is read at `src/ui/api.py`
+   and produced nowhere in `src/`. **This is not a bug fix.**
+   `tests/integration/test_no_dead_context_keys.py` records that `src/service` never called
+   `src.ui.render()` from any HTTP route, so there was no HTML glue to hang the route on. #79 has
+   since added a served UI layer, so **re-check whether that premise still holds** before either
+   fixing it or re-justifying the `xfail`.
+4. **#50 items 2b/2c** — DWD product schema and the invented `DWD-BER` station ids. #68 rewrote
+   much of this lane, so **re-verify what is still outstanding** rather than trusting the issue text.
+5. **#44** market input-validation — filed explicitly **unverified**; verify each of the six
+   findings before fixing. Then **#31** (`src/voice`, still a stub), then p2s **#35** / **#29**.
+6. **Release the six stale claim refs** (below).
 
 ## Working notes for whoever picks this up
+- **CI is dead until the GitHub bill is paid** (see In flight). Verify locally; a PR with no green
+  tick right now means nothing was run, not that something failed.
+- **Six claim refs are still held on merged PRs**: `claim/50`, `claim/69`, `claim/71`, `claim/73`,
+  `claim/75`, `claim/77` — all fully contained in `main`. Release them by RENAME to
+  `merged/<n>-<sha8>`; `AGENTS.md` renames claim refs and never deletes them. Leave `claim/1`
+  (canary) and `claim/state` (lock) alone. **Never delete the `origin/merged/*` refs** — they are
+  protocol state the bus rebuilds from, not clutter. A previous session nearly deleted them as
+  tidy-up.
 - **Claim worktrees live under `~/Dhruv/worktrees/munich-expo-hackathon/`** (#64). The thirteen
   stale ones from the 05–07 Sep build were removed on 2026-09-18; only `claim-1` (the standing
   canary) remains, which is correct. Merged local branches were deleted too — `claim/1` and
