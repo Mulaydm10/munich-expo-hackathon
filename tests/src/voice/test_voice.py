@@ -143,6 +143,45 @@ def test_upstream_errors_are_wrapped(monkeypatch, tmp_path, operation):
             api.speak("hello", client=_client(handler))
 
 
+def test_answer_passes_through_provider_message(monkeypatch, tmp_path):
+    _clear_keys(monkeypatch, tmp_path)
+    monkeypatch.setenv("FEATHERLESS_API_KEY", "test-key")
+
+    def handler(_request):
+        return httpx.Response(403, json={"error": {"message": "model is gated"}})
+
+    with pytest.raises(api.VoiceUpstreamError, match=r"Featherless returned HTTP 403: model is gated"):
+        api.answer("hello", {}, client=_client(handler))
+
+
+def test_transcribe_passes_through_provider_message(monkeypatch, tmp_path):
+    _clear_keys(monkeypatch, tmp_path)
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "test-key")
+
+    def handler(_request):
+        return httpx.Response(401, json={"detail": {"message": "speech_to_text permission required"}})
+
+    with pytest.raises(
+        api.VoiceUpstreamError,
+        match=r"ElevenLabs returned HTTP 401: speech_to_text permission required",
+    ):
+        api.transcribe(b"audio", "audio/webm", client=_client(handler))
+
+
+def test_speak_passes_through_provider_message(monkeypatch, tmp_path):
+    _clear_keys(monkeypatch, tmp_path)
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "test-key")
+
+    def handler(_request):
+        return httpx.Response(401, json={"detail": {"message": "text_to_speech permission required"}})
+
+    with pytest.raises(
+        api.VoiceUpstreamError,
+        match=r"ElevenLabs returned HTTP 401: text_to_speech permission required",
+    ):
+        api.speak("hello", client=_client(handler))
+
+
 def test_brief_text_mentions_missing_revenue_without_symbol():
     text = api.brief_text(
         {

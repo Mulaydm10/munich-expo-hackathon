@@ -19,7 +19,7 @@ LANE = "src/voice"
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _ENV_PATH = _REPO_ROOT / ".env"
 FEATHERLESS_BASE = "https://api.featherless.ai/v1"
-DEFAULT_MODEL = "meta-llama/Meta-Llama-3.1-8B-Instruct"
+DEFAULT_MODEL = "Qwen/Qwen2.5-72B-Instruct"
 DEFAULT_VOICE_ID = "JBFqnCBsd6RMkjVDRZzb"
 PROMPT_PATH = Path(__file__).with_name("prompt.txt")
 
@@ -103,6 +103,19 @@ def _close(client: httpx.Client, owned: bool) -> None:
         client.close()
 
 
+def _upstream_detail(response: httpx.Response, provider: str, key: str) -> str:
+    detail = f"{provider} returned HTTP {response.status_code}"
+    try:
+        body = response.json()
+    except (ValueError, TypeError):
+        return detail
+    nested = body.get(key, {}) if isinstance(body, dict) else {}
+    message = nested.get("message") if isinstance(nested, dict) else None
+    if isinstance(message, str) and message.strip():
+        return f"{detail}: {message.strip()[:160]}"
+    return detail
+
+
 def answer(question: str, context: dict, *, client: httpx.Client | None = None) -> dict | None:
     key = _env("FEATHERLESS_API_KEY")
     if not key:
@@ -130,7 +143,7 @@ def answer(question: str, context: dict, *, client: httpx.Client | None = None) 
             timeout=12,
         )
         if response.is_error:
-            raise VoiceUpstreamError(f"Featherless returned HTTP {response.status_code}")
+            raise VoiceUpstreamError(_upstream_detail(response, "Featherless", "error"))
         body = response.json()
         text = body["choices"][0]["message"]["content"]
         if not isinstance(text, str) or not text.strip():
@@ -163,7 +176,7 @@ def transcribe(
             timeout=12,
         )
         if response.is_error:
-            raise VoiceUpstreamError(f"ElevenLabs returned HTTP {response.status_code}")
+            raise VoiceUpstreamError(_upstream_detail(response, "ElevenLabs", "detail"))
         text = response.json().get("text")
         if not isinstance(text, str):
             raise VoiceUpstreamError("ElevenLabs returned no transcript text")
@@ -190,7 +203,7 @@ def speak(text: str, *, client: httpx.Client | None = None) -> bytes | None:
             timeout=12,
         )
         if response.is_error:
-            raise VoiceUpstreamError(f"ElevenLabs returned HTTP {response.status_code}")
+            raise VoiceUpstreamError(_upstream_detail(response, "ElevenLabs", "detail"))
         return response.content
     except VoiceUpstreamError:
         raise
