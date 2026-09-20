@@ -11,6 +11,7 @@ from typing import Any
 import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
+from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile
 
 LANE = "src/voice"
@@ -284,7 +285,8 @@ async def voice_ask(request: Request) -> JSONResponse:
             None,
         )
     try:
-        result = answer(question, build_context(doc, assumptions=_assumptions(), site=site))
+        context = build_context(doc, assumptions=_assumptions(), site=site)
+        result = await run_in_threadpool(answer, question, context)
     except VoiceUpstreamError as exc:
         return _error(502, "voice_upstream_error", exc.detail, "retry the request")
     return JSONResponse(result or {})
@@ -304,7 +306,11 @@ async def voice_transcribe(request: Request) -> JSONResponse:
         upload = form.get("file")
         if not isinstance(upload, UploadFile):
             raise ValueError("multipart field `file` is required")
-        text = transcribe(await upload.read(), upload.content_type or "audio/webm")
+        text = await run_in_threadpool(
+            transcribe,
+            await upload.read(),
+            upload.content_type or "audio/webm",
+        )
     except VoiceUpstreamError as exc:
         return _error(502, "voice_upstream_error", exc.detail, "retry the request")
     except (ValueError, TypeError) as exc:
@@ -331,7 +337,7 @@ async def voice_speak(request: Request) -> Response:
             "set ELEVENLABS_API_KEY",
         )
     try:
-        audio = speak(text)
+        audio = await run_in_threadpool(speak, text)
     except VoiceUpstreamError as exc:
         return _error(502, "voice_upstream_error", exc.detail, "retry the request")
     return Response(content=audio or b"", media_type="audio/mpeg")
