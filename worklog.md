@@ -366,3 +366,21 @@ Everything below is on `bot/join-real-lane-split` for the human to merge — des
   not reload Python modules — only Jinja templates and `static/` are re-read per request. So
   `/api/voice/health` 404'd on a tree that contains it. Restart after any Python-side merge, and do
   not trust that `git_sha` as evidence of what is loaded.
+
+## 2026-09-20 later — swept for remaining PRs; one unmerged branch found
+
+- **No PR is open except #4, the standing canary.** Everything else has been merged or closed. The
+  three recent design branches (`cinematic-ui`, `motion-fixes`, `voice-copilot`) are all contained
+  in `main`; verified with `merge-base --is-ancestor`, not by reading the PR list.
+- **`origin/deploy/render` is the one unmerged branch, and it has no PR.** One commit: a Render.com
+  blueprint plus ~4.7 MB of canonical parquet committed into git. **Left unmerged deliberately.**
+  It contradicts `.gitignore:50`, which root-anchors `/data/` and explains why: the data is
+  reproducible from `src.data.fetch` + a seed, so none of it belongs in git. Overriding a policy
+  that carries its own written rationale is a decision for Dhruv, not a merge to do quietly.
+- **It would also be a downgrade.** The committed store is `retrieved_at 2026-09-18` with 4,416
+  rows; the running one is `2026-09-20` with 6,144. Merging as-is would freeze the hosted demo on
+  the older, shorter window. The merge is blocked in any case: all ten files exist locally as
+  untracked and git will not overwrite them.
+- The blueprint half looks right on its own — free plan, Frankfurt region, health check on
+  `/api/health`, and `FEATHERLESS_API_KEY`/`ELEVENLABS_API_KEY` declared `sync: false` so they are
+  set in the dashboard rather than committed.

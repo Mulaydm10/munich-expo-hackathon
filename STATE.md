@@ -72,7 +72,21 @@ modules.
   **It needs `FEATHERLESS_API_KEY` and `ELEVENLABS_API_KEY`; neither is set on this Mac**, and the
   lane degrades to text when they are absent. Before any demo that shows voice, decide whether keys
   will exist on the day — and note the degraded path is the one currently exercised.
-- **Nothing else is in flight.** Every PR that was open has been merged or closed. The only open PR is
+- **One unmerged branch, no PR: `origin/deploy/render`** (1 commit, `7004d01`). It adds `render.yaml`
+  — a Render.com blueprint (free plan, Frankfurt, `healthCheckPath: /api/health`, the two voice keys
+  wired as `sync: false`) — **and commits ~4.7 MB of canonical parquet into git**. That second half
+  deliberately contradicts `.gitignore:50` (`/data/`), whose comment states the policy: *"Every one
+  of these is reproducible from `src.data.fetch` + a seed; none of it belongs in git."* The likely
+  reason is that Render's free plan cannot run `fetch()` at build time, so the deploy needs data in
+  the image. **Not merged — this is a live decision for Dhruv**, because:
+  - the committed data is **staler than what is running**: `retrieved_at 2026-09-18`, 4,416 rows,
+    versus the local canonical store at `retrieved_at 2026-09-20`, 6,144 rows;
+  - merging freezes the hosted demo's figures at whatever was committed, until someone re-commits;
+  - a merge is currently **blocked** anyway — all ten files exist locally as untracked, so git
+    refuses to overwrite them without them being moved aside first.
+  Options: merge as-is; merge `render.yaml` only and solve data another way (a build-time fetch, or
+  a Render disk); or merge and immediately re-commit today's fresher data.
+- **No other PR is open or pending.** Every other PR has been merged or closed. The only open PR is
   **#4** (`claim/1`), the standing canary — **never merge it**; the protocol depends on it staying
   open.
 - **CI CANNOT RUN AT ALL, repo-wide.** Every GitHub Actions job since 2026-09-18 fails in 3–4s with
