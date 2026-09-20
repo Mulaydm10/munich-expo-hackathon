@@ -59,7 +59,11 @@ function hero() {
   // Scroll-linked exit: the hero copy lifts and dims as the sections take over. Pinned to
   // scroll position rather than time, so scrubbing back restores it exactly.
   gsap.to('.hero-copy', {
-    y: -70, opacity: 0.12, ease: 'none',
+    y: -70, ease: 'none',
+    scrollTrigger: { trigger: '.hero', start: 'top top', end: 'bottom 45%', scrub: 0.6 },
+  });
+  gsap.to('.hero-copy > :not(.hero-actions)', {
+    opacity: 0.12, ease: 'none',
     scrollTrigger: { trigger: '.hero', start: 'top top', end: 'bottom 45%', scrub: 0.6 },
   });
   gsap.to('.scrubber', {
