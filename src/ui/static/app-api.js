@@ -28,6 +28,65 @@ export async function getHealth() {
   return { ok: body.status === 'ok', backend: `live · ${sha.slice(0, 7)}`, tables: body.tables || {} };
 }
 
+async function voiceRequest(path, options = {}) {
+  const response = await fetch(path, {
+    ...options,
+    headers: { Accept: 'application/json', ...(options.headers || {}) },
+  });
+  if (response.status === 503) return null;
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(body.detail || body.message || body.error || `HTTP ${response.status}`);
+  }
+  return body;
+}
+
+export async function getVoiceStatus() {
+  try {
+    const body = await voiceRequest('/api/voice/status');
+    return {
+      llm: Boolean(body?.llm),
+      stt: Boolean(body?.stt),
+      tts: Boolean(body?.tts),
+    };
+  } catch {
+    return { llm: false, stt: false, tts: false };
+  }
+}
+
+export async function voiceAsk(question, scenarioId, siteId) {
+  const body = await voiceRequest('/api/voice/ask', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ question, scenario_id: scenarioId, site_id: siteId || undefined }),
+  });
+  return body ? { text: body.text, source: body.source } : null;
+}
+
+export async function voiceTranscribe(blob) {
+  const form = new FormData();
+  form.append('file', blob, 'copilot.webm');
+  const body = await voiceRequest('/api/voice/transcribe', {
+    method: 'POST',
+    body: form,
+  });
+  return body ? body.text : null;
+}
+
+export async function voiceSpeak(text) {
+  const response = await fetch('/api/voice/speak', {
+    method: 'POST',
+    headers: { Accept: 'audio/mpeg', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text }),
+  });
+  if (response.status === 503) return null;
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.detail || body.message || body.error || `HTTP ${response.status}`);
+  }
+  return response.blob();
+}
+
 export async function getSites({ bbox = null, limit = 200 } = {}) {
   const query = new URLSearchParams();
   if (bbox) query.set('bbox', bbox.join(','));
