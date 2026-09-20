@@ -1,0 +1,1367 @@
+{
+  "inputs_fingerprint": "b8504f7aa345057d",
+  "map": {
+    "co2_kg_rule": "src.market.co2 of the site's own load under policy='optimised'",
+    "firm_kw_rule": "per-site minimum firm_kw over the scenario day (worst interval)",
+    "revenue_allocation_rule": "totals.capacity_revenue_eur split pro-rata by each site's share of the summed worst-interval firm_kw; null when no capacity revenue could be priced",
+    "sites": [
+      {
+        "co2_kg": 6.315138137509848,
+        "firm_kw": 0.0,
+        "lat": 49.41363,
+        "lon": 8.65533,
+        "profile": "workplace",
+        "rated_power_kw": 39.0,
+        "revenue_eur": null,
+        "site_id": "Baden-W\u00fcrttemberg-06912-35b10541"
+      },
+      {
+        "co2_kg": 4.0919499235100245,
+        "firm_kw": 0.0,
+        "lat": 48.509224,
+        "lon": 9.054554,
+        "profile": "workplace",
+        "rated_power_kw": 88.0,
+        "revenue_eur": null,
+        "site_id": "Baden-W\u00fcrttemberg-07207-6eb11ee8"
+      },
+      {
+        "co2_kg": 7.925730261704068,
+        "firm_kw": 0.0,
+        "lat": 48.472382,
+        "lon": 9.227149,
+        "profile": "public_ac",
+        "rated_power_kw": 50.0,
+        "revenue_eur": null,
+        "site_id": "Baden-W\u00fcrttemberg-07279-94f513de"
+      },
+      {
+        "co2_kg": 4.493430752869164,
+        "firm_kw": 0.0,
+        "lat": 48.724024,
+        "lon": 9.637851,
+        "profile": "workplace",
+        "rated_power_kw": 11.0,
+        "revenue_eur": null,
+        "site_id": "Baden-W\u00fcrttemberg-07309-2d072898"
+      },
+      {
+        "co2_kg": 4.700542624370399,
+        "firm_kw": 0.0,
+        "lat": 48.788295,
+        "lon": 9.76007,
+        "profile": "workplace",
+        "rated_power_kw": 22.0,
+        "revenue_eur": null,
+        "site_id": "Baden-W\u00fcrttemberg-07529-aa06c4fd"
+      },
+      {
+        "co2_kg": 4.855570975266948,
+        "firm_kw": 0.0,
+        "lat": 47.73012,
+        "lon": 9.88063,
+        "profile": "workplace",
+        "rated_power_kw": 22.0,
+        "revenue_eur": null,
+        "site_id": "Baden-W\u00fcrttemberg-08835-7257f9f8"
+      },
+      {
+        "co2_kg": 5.810044841453915,
+        "firm_kw": 0.0,
+        "lat": 47.93138,
+        "lon": 8.452178,
+        "profile": "workplace",
+        "rated_power_kw": 11.0,
+        "revenue_eur": null,
+        "site_id": "Baden-W\u00fcrttemberg-18199-be017d1a"
+      },
+      {
+        "co2_kg": 10.80238083216112,
+        "firm_kw": 0.0,
+        "lat": 49.888644,
+        "lon": 9.029234,
+        "profile": "workplace",
+        "rated_power_kw": 22.0,
+        "revenue_eur": null,
+        "site_id": "Baden-W\u00fcrttemberg-64850-5caf148a"
+      },
+      {
+        "co2_kg": 5.379189518192112,
+        "firm_kw": 0.0,
+        "lat": 49.486058,
+        "lon": 8.461413,
+        "profile": "public_ac",
+        "rated_power_kw": 50.0,
+        "revenue_eur": null,
+        "site_id": "Baden-W\u00fcrttemberg-68159-05bd4c51"
+      },
+      {
+        "co2_kg": 9.334111842245877,
+        "firm_kw": 0.0,
+        "lat": 49.496008,
+        "lon": 8.457824,
+        "profile": "workplace",
+        "rated_power_kw": 44.0,
+        "revenue_eur": null,
+        "site_id": "Baden-W\u00fcrttemberg-68159-1350a543"
+      },
+      {
+        "co2_kg": 0.0,
+        "firm_kw": 0.0,
+        "lat": 49.494699,
+        "lon": 8.467712,
+        "profile": "workplace",
+        "rated_power_kw": 44.0,
+        "revenue_eur": null,
+        "site_id": "Baden-W\u00fcrttemberg-68159-1d984f2b"
+      },
+      {
+        "co2_kg": 2.9240977276360227,
+        "firm_kw": 0.0,
+        "lat": 49.490012,
+        "lon": 8.46741,
+        "profile": "workplace",
+        "rated_power_kw": 22.0,
+        "revenue_eur": null,
+        "site_id": "Baden-W\u00fcrttemberg-68159-1dea26c9"
+      },
+      {
+        "co2_kg": 12.706263181823957,
+        "firm_kw": 0.0,
+        "lat": 49.495773,
+        "lon": 8.460959,
+        "profile": "public_dc",
+        "rated_power_kw": 150.0,
+        "revenue_eur": null,
+        "site_id": "Baden-W\u00fcrttemberg-68159-386a5b14"
+      },
+      {
+        "co2_kg": 63.64897988969298,
+        "firm_kw": 0.0,
+        "lat": 49.485694,
+        "lon": 8.453905,
+        "profile": "public_dc",
+        "rated_power_kw": 300.0,
+        "revenue_eur": null,
+        "site_id": "Baden-W\u00fcrttemberg-68159-567d0dbf"
+      },
+      {
+        "co2_kg": 15.824464121782796,
+        "firm_kw": 0.0,
+        "lat": 49.489147,
+        "lon": 8.464958,
+        "profile": "public_ac",
+        "rated_power_kw": 50.0,
+        "revenue_eur": null,
+        "site_id": "Baden-W\u00fcrttemberg-68159-64402958"
+      },
+      {
+        "co2_kg": 3.2753279084094835,
+        "firm_kw": 0.0,
+        "lat": 49.486744,
+        "lon": 8.464182,
+        "profile": "workplace",
+        "rated_power_kw": 22.0,
+        "revenue_eur": null,
+        "site_id": "Baden-W\u00fcrttemberg-68159-67fe0c86"
+      },
+      {
+        "co2_kg": 1.6570448947556553,
+        "firm_kw": 0.0,
+        "lat": 49.494726,
+        "lon": 8.467645,
+        "profile": "workplace",
+        "rated_power_kw": 44.0,
+        "revenue_eur": null,
+        "site_id": "Baden-W\u00fcrttemberg-68159-861d81da"
+      },
+      {
+        "co2_kg": 42.66193678797122,
+        "firm_kw": 0.0,
+        "lat": 49.492404,
+        "lon": 8.463919,
+        "profile": "public_ac",
+        "rated_power_kw": 88.0,
+        "revenue_eur": null,
+        "site_id": "Baden-W\u00fcrttemberg-68159-8f68efaf"
+      },
+      {
+        "co2_kg": 0.0,
+        "firm_kw": 0.0,
+        "lat": 49.488501,
+        "lon": 8.46199,
+        "profile": "workplace",
+        "rated_power_kw": 22.0,
+        "revenue_eur": null,
+        "site_id": "Baden-W\u00fcrttemberg-68159-93563a6b"
+      },
+      {
+        "co2_kg": 71.78055406321563,
+        "firm_kw": 0.0,
+        "lat": 49.489732,
+        "lon": 8.462482,
+        "profile": "public_dc",
+        "rated_power_kw": 300.0,
+        "revenue_eur": null,
+        "site_id": "Baden-W\u00fcrttemberg-68159-aaa06b34"
+      },
+      {
+        "co2_kg": 8.360889609397207,
+        "firm_kw": 0.0,
+        "lat": 49.487722,
+        "lon": 8.463876,
+        "profile": "workplace",
+        "rated_power_kw": 22.0,
+        "revenue_eur": null,
+        "site_id": "Baden-W\u00fcrttemberg-68159-c11108a8"
+      },
+      {
+        "co2_kg": 57.42110849764615,
+        "firm_kw": 0.0,
+        "lat": 49.489503,
+        "lon": 8.462269,
+        "profile": "public_dc",
+        "rated_power_kw": 300.0,
+        "revenue_eur": null,
+        "site_id": "Baden-W\u00fcrttemberg-68159-c2178f7c"
+      },
+      {
+        "co2_kg": 3.9547895943195597,
+        "firm_kw": 0.0,
+        "lat": 49.495403,
+        "lon": 8.459946,
+        "profile": "workplace",
+        "rated_power_kw": 22.0,
+        "revenue_eur": null,
+        "site_id": "Baden-W\u00fcrttemberg-68159-fa787409"
+      },
+      {
+        "co2_kg": 13.678779305468463,
+        "firm_kw": 0.0,
+        "lat": 49.489408,
+        "lon": 8.476195,
+        "profile": "workplace",
+        "rated_power_kw": 44.0,
+        "revenue_eur": null,
+        "site_id": "Baden-W\u00fcrttemberg-68161-09a2bd95"
+      },
+      {
+        "co2_kg": 10.030515411843739,
+        "firm_kw": 0.0,
+        "lat": 49.484933,
+        "lon": 8.469883,
+        "profile": "workplace",
+        "rated_power_kw": 33.0,
+        "revenue_eur": null,
+        "site_id": "Baden-W\u00fcrttemberg-68161-18235587"
+      },
+      {
+        "co2_kg": 0.0,
+        "firm_kw": 0.0,
+        "lat": 49.491853,
+        "lon": 8.474181,
+        "profile": "workplace",
+        "rated_power_kw": 44.0,
+        "revenue_eur": null,
+        "site_id": "Baden-W\u00fcrttemberg-68161-231473ae"
+      },
+      {
+        "co2_kg": 19.460677438578138,
+        "firm_kw": 0.0,
+        "lat": 49.487851,
+        "lon": 8.471721,
+        "profile": "workplace",
+        "rated_power_kw": 11.0,
+        "revenue_eur": null,
+        "site_id": "Baden-W\u00fcrttemberg-68161-36368119"
+      },
+      {
+        "co2_kg": 12.133297951702497,
+        "firm_kw": 0.0,
+        "lat": 49.488652,
+        "lon": 8.471823,
+        "profile": "workplace",
+        "rated_power_kw": 22.0,
+        "revenue_eur": null,
+        "site_id": "Baden-W\u00fcrttemberg-68161-3c73dcd0"
+      },
+      {
+        "co2_kg": 15.510528447726603,
+        "firm_kw": 0.0,
+        "lat": 49.485653,
+        "lon": 8.466038,
+        "profile": "workplace",
+        "rated_power_kw": 33.0,
+        "revenue_eur": null,
+        "site_id": "Baden-W\u00fcrttemberg-68161-47d4bdb6"
+      },
+      {
+        "co2_kg": 0.0,
+        "firm_kw": 0.0,
+        "lat": 49.485899,
+        "lon": 8.476604,
+        "profile": "workplace",
+        "rated_power_kw": 44.0,
+        "revenue_eur": null,
+        "site_id": "Baden-W\u00fcrttemberg-68161-815098e8"
+      }
+    ]
+  },
+  "pooling": [],
+  "result": {
+    "calibration": {
+      "0.05": 0.28125,
+      "0.1": 0.28125,
+      "0.25": 0.53125,
+      "0.5": 0.7708333333333334,
+      "0.75": 0.84375,
+      "0.9": 0.9270833333333334,
+      "0.95": 0.9791666666666666
+    },
+    "forecast_accuracy": {
+      "accuracy_pct": 6.658066970737653,
+      "climatology_wape": 0.8007729055368319,
+      "coverage_q05_q95": 0.9791666666666666,
+      "history_days": 17,
+      "level": "portfolio",
+      "mae_kw": 46.3214479604575,
+      "seasonal_naive_wape": 1.0090400303067955,
+      "sharpness_kw": 179.5338984260421,
+      "wape": 0.9334193302926235
+    },
+    "id": "e4e4313c0ced02b5",
+    "scorecard": {
+      "deadline_misses": 0.0,
+      "energy_cost_eur": 163.481002735034,
+      "envelope_violation_kwh": 0.0,
+      "floor_shortfall_kw_min": 0.0,
+      "peak_kw": 190.7081163440862,
+      "unmet_kwh": 0.0
+    },
+    "spec": {
+      "date": "2026-08-18",
+      "n_sites": 30,
+      "policy": "optimised",
+      "pool_method": "empirical",
+      "product": "aFRR",
+      "region": null,
+      "seed": 5,
+      "site_ids": null,
+      "tau": 0.05
+    },
+    "totals": {
+      "capacity_revenue_eur": null,
+      "co2_kg_saved": 21.1302408935494,
+      "energy_cost_eur": 184.0600849064645,
+      "net_eur": null,
+      "peak_kw_baseline": 272.170342431,
+      "peak_kw_optimised": 223.9262802533355,
+      "peakers_displaced": null,
+      "penalty_eur": null,
+      "pool_firm_mw": null
+    },
+    "warnings": [
+      {
+        "code": "history_truncated",
+        "detail": {
+          "requested": 28,
+          "used": 17
+        },
+        "lane": "src/service",
+        "message": "the canonical grid-load/price tables start after the requested history window; the forecast used the available history"
+      },
+      {
+        "code": "weather_stations_averaged",
+        "detail": {
+          "n_stations": 6
+        },
+        "lane": "src/service",
+        "message": "ambient temperature is the mean of 6 stations applied to every site; src.data.nearest_weather_station() is not wired, so no per-site station could be chosen"
+      },
+      {
+        "code": "missing_table",
+        "detail": {
+          "how_to_get_it": "fetch('regelleistung', start=..., end=...); canonicalise('regelleistung')",
+          "table": "balancing"
+        },
+        "lane": "src/data",
+        "message": "canonical table 'balancing' is not built; every figure derived from it is reported as null rather than zero"
+      },
+      {
+        "code": "sessions_energy_clipped",
+        "detail": {
+          "count": 494,
+          "rate": 0.29058823529411765
+        },
+        "lane": "src/fleet",
+        "message": "synthesise_sessions() capped some sessions' energy draw to fit their dwell; a clipped session carries no scheduling slack"
+      },
+      {
+        "code": "sessions_dropped_no_free_point",
+        "detail": {
+          "arrivals": 1796,
+          "dropped": 96,
+          "rate": 0.053452115812917596
+        },
+        "lane": "src/fleet",
+        "message": "arrivals were turned away because every charge point at the site was busy"
+      },
+      {
+        "code": "sessions_outside_day_grid",
+        "detail": {
+          "count": 15,
+          "total_sessions": 1700
+        },
+        "lane": "src/service",
+        "message": "15 session(s) start before or end after the scenario day and are never offered to the solver; they are carried at their uncontrolled baseline in the optimised curve (see `energy_not_optimised` for the share)"
+      },
+      {
+        "code": "envelope_clipped",
+        "detail": {
+          "rate": 0.020833333333333332
+        },
+        "lane": "src/grid",
+        "message": "thermal_envelope() truncated the physically-solved limit at MAX_ENVELOPE_MULTIPLE_OF_NAMEPLATE on some intervals; the envelope shown is the cap, not the thermal solution"
+      },
+      {
+        "code": "forecast_quantile_crossing",
+        "detail": {
+          "rate": 0.052083333333333336
+        },
+        "lane": "src/forecast",
+        "message": "the independently-fitted quantile heads crossed on some rows and predict() re-sorted them"
+      },
+      {
+        "code": "pool_failed",
+        "detail": {
+          "detail_text": "cannot measure correlation: site(s) ['Baden-W\u00fcrttemberg-06912-35b10541', 'Baden-W\u00fcrttemberg-07207-6eb11ee8', 'Baden-W\u00fcrttemberg-07279-94f513de', 'Baden-W\u00fcrttemberg-07309-2d072898', 'Baden-W\u00fcrttemberg-07529-aa06c4fd', 'Baden-W\u00fcrttemberg-08835-7257f9f8', 'Baden-W\u00fcrttemberg-18199-be017d1a', 'Baden-W\u00fcrttemberg-64850-5caf148a', 'Baden-W\u00fcrttemberg-68159-05bd4c51', 'Baden-W\u00fcrttemberg-68159-1350a543', 'Baden-W\u00fcrttemberg-68159-1d984f2b', 'Baden-W\u00fcrttemberg-68159-1dea26c9', 'Baden-W\u00fcrttemberg-68159-386a5b14', 'Baden-W\u00fcrttemberg-68159-567d0dbf', 'Baden-W\u00fcrttemberg-68159-64402958', 'Baden-W\u00fcrttemberg-68159-67fe0c86', 'Baden-W\u00fcrttemberg-68159-861d81da', 'Baden-W\u00fcrttemberg-68159-8f68efaf', 'Baden-W\u00fcrttemberg-68159-93563a6b', 'Baden-W\u00fcrttemberg-68159-aaa06b34', 'Baden-W\u00fcrttemberg-68159-c11108a8', 'Baden-W\u00fcrttemberg-68159-c2178f7c', 'Baden-W\u00fcrttemberg-68159-fa787409', 'Baden-W\u00fcrttemberg-68161-09a2bd95', 'Baden-W\u00fcrttemberg-68161-18235587', 'Baden-W\u00fcrttemberg-68161-231473ae', 'Baden-W\u00fcrttemberg-68161-36368119', 'Baden-W\u00fcrttemberg-68161-3c73dcd0', 'Baden-W\u00fcrttemberg-68161-47d4bdb6', 'Baden-W\u00fcrttemberg-68161-815098e8'] have zero residual variation, so their pairwise correlation is undefined. Pass an explicit `correlation=` (from correlation_structure) rather than letting an undefined correlation be silently treated as zero -- assumed independence overstates the pooled promise."
+        },
+        "lane": "src/market",
+        "message": "pool() could not aggregate this portfolio's firm capacity into a pooled promise: cannot measure correlation: site(s) ['Baden-W\u00fcrttemberg-06912-35b10541', 'Baden-W\u00fcrttemberg-07207-6eb11ee8', 'Baden-W\u00fcrttemberg-07279-94f513de', 'Baden-W\u00fcrttemberg-07309-2d072898', 'Baden-W\u00fcrttemberg-07529-aa06c4fd', 'Baden-W\u00fcrttemberg-08835-7257f9f8', 'Baden-W\u00fcrttemberg-18199-be017d1a', 'Baden-W\u00fcrttemberg-64850-5caf148a', 'Baden-W\u00fcrttemberg-68159-05bd4c51', 'Baden-W\u00fcrttemberg-68159-1350a543', 'Baden-W\u00fcrttemberg-68159-1d984f2b', 'Baden-W\u00fcrttemberg-68159-1dea26c9', 'Baden-W\u00fcrttemberg-68159-386a5b14', 'Baden-W\u00fcrttemberg-68159-567d0dbf', 'Baden-W\u00fcrttemberg-68159-64402958', 'Baden-W\u00fcrttemberg-68159-67fe0c86', 'Baden-W\u00fcrttemberg-68159-861d81da', 'Baden-W\u00fcrttemberg-68159-8f68efaf', 'Baden-W\u00fcrttemberg-68159-93563a6b', 'Baden-W\u00fcrttemberg-68159-aaa06b34', 'Baden-W\u00fcrttemberg-68159-c11108a8', 'Baden-W\u00fcrttemberg-68159-c2178f7c', 'Baden-W\u00fcrttemberg-68159-fa787409', 'Baden-W\u00fcrttemberg-68161-09a2bd95', 'Baden-W\u00fcrttemberg-68161-18235587', 'Baden-W\u00fcrttemberg-68161-231473ae', 'Baden-W\u00fcrttemberg-68161-36368119', 'Baden-W\u00fcrttemberg-68161-3c73dcd0', 'Baden-W\u00fcrttemberg-68161-47d4bdb6', 'Baden-W\u00fcrttemberg-68161-815098e8'] have zero residual variation, so their pairwise correlation is undefined. Pass an explicit `correlation=` (from correlation_structure) rather than letting an undefined correlation be silently treated as zero -- assumed independence overstates the pooled promise.; pool_firm_mw and every figure derived from it (peakers_displaced, capacity_revenue_eur) is null, not zero"
+      },
+      {
+        "code": "diversification_curve_failed",
+        "detail": {
+          "detail_text": "diversification_curve() requires `realised` (t, site_id, realised_kw): shortfall_rate must be measured against realised load. Deriving it from the same distribution that produced the promise would make it ~tau by construction -- a number that cannot move is not evidence."
+        },
+        "lane": "src/market",
+        "message": "diversification_curve() could not be computed for this scenario: diversification_curve() requires `realised` (t, site_id, realised_kw): shortfall_rate must be measured against realised load. Deriving it from the same distribution that produced the promise would make it ~tau by construction -- a number that cannot move is not evidence.; /pooling returns an empty curve rather than a fabricated one"
+      },
+      {
+        "code": "commitments_not_applied",
+        "detail": {
+          "commitments": 0
+        },
+        "lane": "src/service",
+        "message": "the optimised schedule holds no sold reduction floor: src.sched.Commitment has no site_id and applies to every site in a call, so a portfolio floor cannot be posed without one solver call per site. `firm_kw` is what could be sold, not what was sold, and scorecard.floor_shortfall_kw_min is measured against no commitment."
+      },
+      {
+        "code": "demand_charge_applied",
+        "detail": {
+          "eur_per_kw_day": 0.3
+        },
+        "lane": "src/service",
+        "message": "the optimised schedule minimises energy cost plus a demand charge on each site's daily peak (src.sched.DEMAND_CHARGE_EUR_PER_KW_DAY); source is ASSUMED, see src/sched"
+      },
+      {
+        "code": "portfolio_coordination",
+        "detail": {
+          "chosen_sweep": 2,
+          "includes_residual": true,
+          "peak_kw_by_sweep": [
+            313.6112347492951,
+            226.8403141102503,
+            223.9262802533355
+          ],
+          "shadow_eur_mwh_at_baseline_peak": 100.0,
+          "shadow_exponent": 3,
+          "sweeps": 3
+        },
+        "lane": "src/service",
+        "message": "sites are scheduled independently, so the per-site LPs were re-solved sequentially with a shadow price on the running portfolio load; the sweep with the lowest portfolio peak was kept"
+      },
+      {
+        "code": "energy_not_optimised",
+        "detail": {
+          "baseline_kwh": 1191.0132080749404,
+          "rate": 0.10246311831513807,
+          "residual_kwh": 122.03492725387478
+        },
+        "lane": "src/service",
+        "message": "share of the day's charging energy the optimiser never placed (an infeasible site, or a session straddling the day boundary); it is carried at its uncontrolled baseline in the optimised curve, so the two curves cover the same sessions and the difference between them is only what was actually scheduled"
+      },
+      {
+        "code": "not_settled",
+        "detail": {},
+        "lane": "src/service",
+        "message": "penalty_eur and net_eur are null: src.market.settle() needs a delivery record per block, and this scenario dispatches no reduction event. Delivered-vs-promised is measured on POST /api/scenario/{id}/dispatch instead of being guessed here."
+      }
+    ]
+  },
+  "timeseries": [
+    {
+      "envelope_kw": 5848.2,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 0.0,
+      "load_kw_optimised": 0.0,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 187.93,
+      "t": "2026-08-17T22:00:00+00:00"
+    },
+    {
+      "envelope_kw": 5848.2,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 0.0,
+      "load_kw_optimised": 0.0,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 179.97,
+      "t": "2026-08-17T22:15:00+00:00"
+    },
+    {
+      "envelope_kw": 5406.5382838528,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 0.0,
+      "load_kw_optimised": 0.0,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 167.81,
+      "t": "2026-08-17T22:30:00+00:00"
+    },
+    {
+      "envelope_kw": 4871.785913019519,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 54.250796916666665,
+      "load_kw_optimised": 54.25079691666666,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 158.56,
+      "t": "2026-08-17T22:45:00+00:00"
+    },
+    {
+      "envelope_kw": 4582.265109362104,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 33.62566813191667,
+      "load_kw_optimised": 0.0,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 167.15,
+      "t": "2026-08-17T23:00:00+00:00"
+    },
+    {
+      "envelope_kw": 4299.013697117231,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 0.0,
+      "load_kw_optimised": 0.0,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 161.93,
+      "t": "2026-08-17T23:15:00+00:00"
+    },
+    {
+      "envelope_kw": 4086.2813498236305,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 0.0,
+      "load_kw_optimised": 33.6256681318243,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 160.0,
+      "t": "2026-08-17T23:30:00+00:00"
+    },
+    {
+      "envelope_kw": 3919.9368584586005,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 0.0,
+      "load_kw_optimised": 0.0,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 150.07,
+      "t": "2026-08-17T23:45:00+00:00"
+    },
+    {
+      "envelope_kw": 3821.066920880833,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 0.0,
+      "load_kw_optimised": 0.0,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 152.55,
+      "t": "2026-08-18T00:00:00+00:00"
+    },
+    {
+      "envelope_kw": 3709.4221793914708,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 0.0,
+      "load_kw_optimised": 0.0,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 150.08,
+      "t": "2026-08-18T00:15:00+00:00"
+    },
+    {
+      "envelope_kw": 3629.556051940169,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 0.0,
+      "load_kw_optimised": 0.0,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 149.66,
+      "t": "2026-08-18T00:30:00+00:00"
+    },
+    {
+      "envelope_kw": 3568.0589416140156,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 76.27495489733334,
+      "load_kw_optimised": 0.0,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 150.93,
+      "t": "2026-08-18T00:45:00+00:00"
+    },
+    {
+      "envelope_kw": 3538.598542767246,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 0.0,
+      "load_kw_optimised": 0.0,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 148.34,
+      "t": "2026-08-18T01:00:00+00:00"
+    },
+    {
+      "envelope_kw": 3495.6680920431836,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 0.0,
+      "load_kw_optimised": 76.2749548973728,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 146.98,
+      "t": "2026-08-18T01:15:00+00:00"
+    },
+    {
+      "envelope_kw": 3466.465202730992,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 0.0,
+      "load_kw_optimised": 0.0,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 148.18,
+      "t": "2026-08-18T01:30:00+00:00"
+    },
+    {
+      "envelope_kw": 3444.134008465099,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 0.0,
+      "load_kw_optimised": 0.0,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 150.07,
+      "t": "2026-08-18T01:45:00+00:00"
+    },
+    {
+      "envelope_kw": 3450.5569975910007,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 0.0,
+      "load_kw_optimised": 0.0,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 148.4,
+      "t": "2026-08-18T02:00:00+00:00"
+    },
+    {
+      "envelope_kw": 3428.6124021976725,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 0.0,
+      "load_kw_optimised": 0.0,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 147.05,
+      "t": "2026-08-18T02:15:00+00:00"
+    },
+    {
+      "envelope_kw": 3416.690124825633,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 0.0,
+      "load_kw_optimised": 0.0,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 149.3,
+      "t": "2026-08-18T02:30:00+00:00"
+    },
+    {
+      "envelope_kw": 3407.5962280116464,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 0.0,
+      "load_kw_optimised": 0.0,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 152.13,
+      "t": "2026-08-18T02:45:00+00:00"
+    },
+    {
+      "envelope_kw": 3426.0668094267403,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 0.0,
+      "load_kw_optimised": 0.0,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 147.12,
+      "t": "2026-08-18T03:00:00+00:00"
+    },
+    {
+      "envelope_kw": 3411.110558774273,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 0.0,
+      "load_kw_optimised": 0.0,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 155.99,
+      "t": "2026-08-18T03:15:00+00:00"
+    },
+    {
+      "envelope_kw": 3404.922405958309,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 0.0,
+      "load_kw_optimised": 0.0,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 159.44,
+      "t": "2026-08-18T03:30:00+00:00"
+    },
+    {
+      "envelope_kw": 3400.206382866518,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 0.0,
+      "load_kw_optimised": 0.0,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 173.57,
+      "t": "2026-08-18T03:45:00+00:00"
+    },
+    {
+      "envelope_kw": 3422.0356809239493,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 0.0,
+      "load_kw_optimised": 0.0,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 172.39,
+      "t": "2026-08-18T04:00:00+00:00"
+    },
+    {
+      "envelope_kw": 3409.6128457478267,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 0.0,
+      "load_kw_optimised": 0.0,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 190.44,
+      "t": "2026-08-18T04:15:00+00:00"
+    },
+    {
+      "envelope_kw": 3405.3613600590106,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 0.0,
+      "load_kw_optimised": 0.0,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 192.51,
+      "t": "2026-08-18T04:30:00+00:00"
+    },
+    {
+      "envelope_kw": 3402.122270607889,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 3.6079354513888884,
+      "load_kw_optimised": 3.6079354513888884,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 195.78,
+      "t": "2026-08-18T04:45:00+00:00"
+    },
+    {
+      "envelope_kw": 3397.8355117620417,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 17.68249454888889,
+      "load_kw_optimised": 14.805472916666666,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 199.7,
+      "t": "2026-08-18T05:00:00+00:00"
+    },
+    {
+      "envelope_kw": 3396.6504824185567,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 35.81323331361111,
+      "load_kw_optimised": 24.81323331361111,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 193.79,
+      "t": "2026-08-18T05:15:00+00:00"
+    },
+    {
+      "envelope_kw": 3395.3743464042213,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 46.26034436959222,
+      "load_kw_optimised": 28.270481218470774,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 188.86,
+      "t": "2026-08-18T05:30:00+00:00"
+    },
+    {
+      "envelope_kw": 3394.402523053514,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 62.21976587566259,
+      "load_kw_optimised": 35.14384100567871,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 187.94,
+      "t": "2026-08-18T05:45:00+00:00"
+    },
+    {
+      "envelope_kw": 3320.3351309060176,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 132.69734140063704,
+      "load_kw_optimised": 51.33222171123798,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 201.38,
+      "t": "2026-08-18T06:00:00+00:00"
+    },
+    {
+      "envelope_kw": 3347.8732115772436,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 160.25212924309926,
+      "load_kw_optimised": 61.49129026862009,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 196.16,
+      "t": "2026-08-18T06:15:00+00:00"
+    },
+    {
+      "envelope_kw": 3353.7091709859546,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 139.51120859537073,
+      "load_kw_optimised": 63.63294832436793,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 180.0,
+      "t": "2026-08-18T06:30:00+00:00"
+    },
+    {
+      "envelope_kw": 3358.148909288666,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 137.5166388679911,
+      "load_kw_optimised": 75.9349473390282,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 163.34,
+      "t": "2026-08-18T06:45:00+00:00"
+    },
+    {
+      "envelope_kw": 3263.571649819657,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 145.1660226129511,
+      "load_kw_optimised": 98.6737560124968,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 174.56,
+      "t": "2026-08-18T07:00:00+00:00"
+    },
+    {
+      "envelope_kw": 3303.7637856092483,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 121.92548618641834,
+      "load_kw_optimised": 70.64618276379487,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 167.97,
+      "t": "2026-08-18T07:15:00+00:00"
+    },
+    {
+      "envelope_kw": 3314.1083752521754,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 154.66972526658037,
+      "load_kw_optimised": 77.13701597515316,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 156.37,
+      "t": "2026-08-18T07:30:00+00:00"
+    },
+    {
+      "envelope_kw": 3321.9730886212324,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 103.65140318241667,
+      "load_kw_optimised": 103.94726682741178,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 146.82,
+      "t": "2026-08-18T07:45:00+00:00"
+    },
+    {
+      "envelope_kw": 3240.631522390667,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 152.23332222874,
+      "load_kw_optimised": 119.87630213035632,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 160.98,
+      "t": "2026-08-18T08:00:00+00:00"
+    },
+    {
+      "envelope_kw": 3278.715986709068,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 71.29877088868221,
+      "load_kw_optimised": 89.48528929442271,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 155.17,
+      "t": "2026-08-18T08:15:00+00:00"
+    },
+    {
+      "envelope_kw": 3289.663595104892,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 187.91172921268517,
+      "load_kw_optimised": 199.3210667324117,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 147.9,
+      "t": "2026-08-18T08:30:00+00:00"
+    },
+    {
+      "envelope_kw": 3297.986396646925,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 251.62728123283335,
+      "load_kw_optimised": 223.9262802533355,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 145.48,
+      "t": "2026-08-18T08:45:00+00:00"
+    },
+    {
+      "envelope_kw": 3246.6253889738286,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 142.86972841354887,
+      "load_kw_optimised": 175.7141676955883,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 148.95,
+      "t": "2026-08-18T09:00:00+00:00"
+    },
+    {
+      "envelope_kw": 3273.558713425178,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 55.41982316874666,
+      "load_kw_optimised": 56.361881199054096,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 144.56,
+      "t": "2026-08-18T09:15:00+00:00"
+    },
+    {
+      "envelope_kw": 3282.1663884165123,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 43.55152380340667,
+      "load_kw_optimised": 39.488227941771896,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 141.93,
+      "t": "2026-08-18T09:30:00+00:00"
+    },
+    {
+      "envelope_kw": 3288.7128829556814,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 187.55526869965334,
+      "load_kw_optimised": 38.932427382726296,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 147.13,
+      "t": "2026-08-18T09:45:00+00:00"
+    },
+    {
+      "envelope_kw": 3234.011612237828,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 272.170342431,
+      "load_kw_optimised": 43.532687743055035,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 137.31,
+      "t": "2026-08-18T10:00:00+00:00"
+    },
+    {
+      "envelope_kw": 3260.6769906422815,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 23.692932326166662,
+      "load_kw_optimised": 43.532687743055035,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 137.16,
+      "t": "2026-08-18T10:15:00+00:00"
+    },
+    {
+      "envelope_kw": 3268.6712890258054,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 12.268188493993055,
+      "load_kw_optimised": 75.88445758155078,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 136.41,
+      "t": "2026-08-18T10:30:00+00:00"
+    },
+    {
+      "envelope_kw": 3274.7520862050214,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 14.862168849578518,
+      "load_kw_optimised": 128.46014817454028,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 135.42,
+      "t": "2026-08-18T10:45:00+00:00"
+    },
+    {
+      "envelope_kw": 3191.2476438525073,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 2.75,
+      "load_kw_optimised": 104.36671348313125,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 133.77,
+      "t": "2026-08-18T11:00:00+00:00"
+    },
+    {
+      "envelope_kw": 3228.5979449334645,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 2.75,
+      "load_kw_optimised": 94.51807275412104,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 133.15,
+      "t": "2026-08-18T11:15:00+00:00"
+    },
+    {
+      "envelope_kw": 3238.8237876839567,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 11.851334166666666,
+      "load_kw_optimised": 101.34525073423282,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 131.76,
+      "t": "2026-08-18T11:30:00+00:00"
+    },
+    {
+      "envelope_kw": 3246.599681855169,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 19.33947395361111,
+      "load_kw_optimised": 104.59009036636672,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 128.73,
+      "t": "2026-08-18T11:45:00+00:00"
+    },
+    {
+      "envelope_kw": 3235.6668410467546,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 24.83421553777778,
+      "load_kw_optimised": 85.93559545072995,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 129.85,
+      "t": "2026-08-18T12:00:00+00:00"
+    },
+    {
+      "envelope_kw": 3246.6103357976053,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 80.76334826731222,
+      "load_kw_optimised": 102.51997357638837,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 130.24,
+      "t": "2026-08-18T12:15:00+00:00"
+    },
+    {
+      "envelope_kw": 3251.4780269958446,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 4.454111327648889,
+      "load_kw_optimised": 49.468900504736744,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 131.96,
+      "t": "2026-08-18T12:30:00+00:00"
+    },
+    {
+      "envelope_kw": 3255.182653506781,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 13.517413885555555,
+      "load_kw_optimised": 83.89334681032533,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 130.1,
+      "t": "2026-08-18T12:45:00+00:00"
+    },
+    {
+      "envelope_kw": 3239.298695380631,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 40.40129026847222,
+      "load_kw_optimised": 72.50204768638581,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 131.79,
+      "t": "2026-08-18T13:00:00+00:00"
+    },
+    {
+      "envelope_kw": 3248.5934713660254,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 38.75,
+      "load_kw_optimised": 68.03846304078027,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 130.35,
+      "t": "2026-08-18T13:15:00+00:00"
+    },
+    {
+      "envelope_kw": 3251.826255361947,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 45.89786919,
+      "load_kw_optimised": 59.08884085083026,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 131.72,
+      "t": "2026-08-18T13:30:00+00:00"
+    },
+    {
+      "envelope_kw": 3254.287272010061,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 60.75,
+      "load_kw_optimised": 54.4815265024283,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 135.91,
+      "t": "2026-08-18T13:45:00+00:00"
+    },
+    {
+      "envelope_kw": 3233.7005036671326,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 140.57325488930974,
+      "load_kw_optimised": 112.45477641606121,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 132.03,
+      "t": "2026-08-18T14:00:00+00:00"
+    },
+    {
+      "envelope_kw": 3243.7105621503706,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 122.57416373522777,
+      "load_kw_optimised": 105.3556326696875,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 134.74,
+      "t": "2026-08-18T14:15:00+00:00"
+    },
+    {
+      "envelope_kw": 3246.7152090436675,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 41.01596081997333,
+      "load_kw_optimised": 73.2576988241684,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 139.72,
+      "t": "2026-08-18T14:30:00+00:00"
+    },
+    {
+      "envelope_kw": 3249.002669185203,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 37.51799379448,
+      "load_kw_optimised": 45.24134424083507,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 149.3,
+      "t": "2026-08-18T14:45:00+00:00"
+    },
+    {
+      "envelope_kw": 3224.5041801820735,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 51.11411555817334,
+      "load_kw_optimised": 56.91690805657874,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 138.26,
+      "t": "2026-08-18T15:00:00+00:00"
+    },
+    {
+      "envelope_kw": 3235.859672599697,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 52.38165257139333,
+      "load_kw_optimised": 51.484379990835066,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 150.66,
+      "t": "2026-08-18T15:15:00+00:00"
+    },
+    {
+      "envelope_kw": 3239.1104476921478,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 31.131145977836667,
+      "load_kw_optimised": 35.4873788991752,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 160.5,
+      "t": "2026-08-18T15:30:00+00:00"
+    },
+    {
+      "envelope_kw": 3241.5852369223016,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 194.72926515164554,
+      "load_kw_optimised": 135.56557278736386,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 167.19,
+      "t": "2026-08-18T15:45:00+00:00"
+    },
+    {
+      "envelope_kw": 3360.139659722147,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 164.81272138467335,
+      "load_kw_optimised": 149.79867341373182,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 159.01,
+      "t": "2026-08-18T16:00:00+00:00"
+    },
+    {
+      "envelope_kw": 3317.3302510503345,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 36.72679655761111,
+      "load_kw_optimised": 140.37766423733726,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 174.44,
+      "t": "2026-08-18T16:15:00+00:00"
+    },
+    {
+      "envelope_kw": 3308.4774347081907,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 65.44232448033333,
+      "load_kw_optimised": 73.5790118742095,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 187.57,
+      "t": "2026-08-18T16:30:00+00:00"
+    },
+    {
+      "envelope_kw": 3301.725864970661,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 25.0,
+      "load_kw_optimised": 11.21508104253811,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 193.2,
+      "t": "2026-08-18T16:45:00+00:00"
+    },
+    {
+      "envelope_kw": 3318.776866723406,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 4.496692421222223,
+      "load_kw_optimised": 22.903937230390454,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 192.0,
+      "t": "2026-08-18T17:00:00+00:00"
+    },
+    {
+      "envelope_kw": 3306.4028604678274,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 5.175919967777777,
+      "load_kw_optimised": 16.312607361326204,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 195.01,
+      "t": "2026-08-18T17:15:00+00:00"
+    },
+    {
+      "envelope_kw": 3301.5246582701816,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 11.0,
+      "load_kw_optimised": 22.136687393548428,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 200.16,
+      "t": "2026-08-18T17:30:00+00:00"
+    },
+    {
+      "envelope_kw": 3297.80663067291,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 11.0,
+      "load_kw_optimised": 9.973683888132795,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 203.56,
+      "t": "2026-08-18T17:45:00+00:00"
+    },
+    {
+      "envelope_kw": 3339.292692036399,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 11.0,
+      "load_kw_optimised": 17.474598388132797,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 198.56,
+      "t": "2026-08-18T18:00:00+00:00"
+    },
+    {
+      "envelope_kw": 3320.2737098821044,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 11.0,
+      "load_kw_optimised": 16.71114988333916,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 202.56,
+      "t": "2026-08-18T18:15:00+00:00"
+    },
+    {
+      "envelope_kw": 3314.855450268817,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 2.0470386985277775,
+      "load_kw_optimised": 17.474598388132797,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 202.0,
+      "t": "2026-08-18T18:30:00+00:00"
+    },
+    {
+      "envelope_kw": 3310.72560768372,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 0.0,
+      "load_kw_optimised": 2.8104872033333335,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 198.46,
+      "t": "2026-08-18T18:45:00+00:00"
+    },
+    {
+      "envelope_kw": 3368.284763989487,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 0.0,
+      "load_kw_optimised": 0.0,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 203.6,
+      "t": "2026-08-18T19:00:00+00:00"
+    },
+    {
+      "envelope_kw": 3342.8126496343284,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 12.441747529388888,
+      "load_kw_optimised": 2.1577027801393083,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 208.53,
+      "t": "2026-08-18T19:15:00+00:00"
+    },
+    {
+      "envelope_kw": 3335.8181530610896,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 0.0,
+      "load_kw_optimised": 6.4745983881327955,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 196.03,
+      "t": "2026-08-18T19:30:00+00:00"
+    },
+    {
+      "envelope_kw": 3330.485867650105,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 3.6609425,
+      "load_kw_optimised": 7.470388861111111,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 187.02,
+      "t": "2026-08-18T19:45:00+00:00"
+    },
+    {
+      "envelope_kw": 3372.3151482340945,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 25.0,
+      "load_kw_optimised": 9.993455037498894,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 200.23,
+      "t": "2026-08-18T20:00:00+00:00"
+    },
+    {
+      "envelope_kw": 3351.762159503097,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 21.069157733277777,
+      "load_kw_optimised": 9.993455037498894,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 195.0,
+      "t": "2026-08-18T20:15:00+00:00"
+    },
+    {
+      "envelope_kw": 3345.4964874921416,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 35.58750685777778,
+      "load_kw_optimised": 45.58096189527667,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 188.25,
+      "t": "2026-08-18T20:30:00+00:00"
+    },
+    {
+      "envelope_kw": 3340.7205188588355,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 11.0,
+      "load_kw_optimised": 20.993455037498894,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 182.06,
+      "t": "2026-08-18T20:45:00+00:00"
+    },
+    {
+      "envelope_kw": 3353.6146189843357,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 23.119232419083332,
+      "load_kw_optimised": 29.214569991111112,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 191.52,
+      "t": "2026-08-18T21:00:00+00:00"
+    },
+    {
+      "envelope_kw": 3344.541699442136,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 135.62967370027778,
+      "load_kw_optimised": 135.62967370027778,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 177.9,
+      "t": "2026-08-18T21:15:00+00:00"
+    },
+    {
+      "envelope_kw": 3341.0207497102438,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 209.8545366941667,
+      "load_kw_optimised": 209.85453669441387,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 174.25,
+      "t": "2026-08-18T21:30:00+00:00"
+    },
+    {
+      "envelope_kw": 3338.338072919473,
+      "firm_kw": 0.0,
+      "load_kw_baseline": 81.305703651,
+      "load_kw_optimised": 81.305703651,
+      "pool_firm_kw": null,
+      "price_eur_mwh": 164.9,
+      "t": "2026-08-18T21:45:00+00:00"
+    }
+  ]
+}
