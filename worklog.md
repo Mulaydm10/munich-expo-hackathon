@@ -271,3 +271,67 @@ Everything below is on `bot/join-real-lane-split` for the human to merge — des
   `#090c14`, which assumed the old raised panel; against `--navy-900` they read marginally lighter
   than their surroundings instead of darker. One character, in a module this pass otherwise never
   touched.
+
+## 2026-09-20 late afternoon — first real data through the engine; main pushed (mac worker)
+
+- **`fetch()` was finally run, and the repo now has real German data.** This had been the single
+  highest-value open move since #68 wired the downloads two days ago, and it turned out to be one
+  command wide as advertised. All five sources downloaded and canonicalised: a 53 MB BNetzA
+  registry (**75,582 sites**), SMARD consumption/generation, EPEX day-ahead, and 15 DWD station
+  ZIPs. `/api/health` went from `"degraded"` with every table `null` to `"ok"`.
+- **The counts are the evidence, not the fact that it ran.** `grid_load`, `prices` and `carbon` came
+  out at **6,144 rows each = 64 days x 96 intervals exactly**, so the 15-minute grid has no holes.
+  `weather` is 316,168 rows across 15 stations.
+- **`docs/HANDOFF.md` §4.1 predicted the first real file would parse to almost nothing, silently.
+  It did not.** Checked rather than assumed: German load came out 35.5–64.8 GW, carbon **352.2
+  g/kWh** mean — the mixed-header defect that once read 182.8 is genuinely fixed on real bytes, not
+  just on the fixture — and **74 negative-price intervals survived** instead of being scrubbed,
+  which is the correct behaviour for day-ahead data. One `UserWarning` fired naming three
+  generation categories with no emission factor and excluded from both numerator and denominator;
+  that is the "any coercion must be observable" convention working as designed, not a defect.
+- **A 200-site scenario ran end-to-end on real data**: baseline peak 1467.4 kW → optimised 1305.2
+  kW, zero deadline misses, zero envelope violations. Cached on disk, so the page loads instantly.
+- **The forecast needs ≥10 days of history before the scenario day.** A 1 Sep → 16 Sep window
+  failed a 10 Sep scenario with a 503 that named the shortfall precisely. Re-fetched from mid-July.
+  Worth recording that the failure was self-explaining — this lane's error messages are good.
+- **What real data exposed, that fixtures had hidden:** `capacity_revenue_eur`, `net_eur`,
+  `pool_firm_mw` and `peakers_displaced` all return **`null`** on a real run, because `balancing`
+  was never built (#51) and pooling degraded on correlation. The revenue line the pitch leads with
+  shows nothing at all. Forecast accuracy is 32.0% (WAPE 0.68) — it beats seasonal-naive (1.17) and
+  climatology (0.82) with 95.8% coverage against a 90% target, but it is low.
+- **One defect closed itself.** The landing page's disclosure — "grid load, weather, electricity
+  prices and registered charging locations are real public data" — was **false in the morning and
+  true by the afternoon.** It became true by running `fetch()`, not by editing the page. Recorded
+  because the tempting fix would have been to soften the sentence.
+
+- **#43 finding 1 re-verified; the premise still holds.** `STATE.md` had flagged this for
+  re-checking on the theory that #79's served UI might have invalidated it. It has not. `src/service`
+  serves only `ui.render_page()` for `landing` and `simulator`; **`ui.render()` has zero callers**,
+  and the five context-driven screens (`map`, `day`, `call`, `pooling`, `ledger`) all **404 on the
+  live app** — probed, not inferred. The `xfail` stays justified. Either route those five or delete
+  them; the #66 work on `default_reduction_event()` is unreachable from the running app today.
+- **Found: a dead ternary at `app-simulator.js:208`** — `app.dispatchResult ? 'optimised' :
+  'optimised'`. Both branches identical; should be `'baseline'`. Because `setLoad()` branches on
+  `phase`, the 3D twin looks the same before and after a dispatch — exactly the frame a judge would
+  read as proof. `app-story.js:140/145` does it correctly, which is how the intent is known. Left
+  unfixed: `src/ui` was another agent's surface today.
+
+- **`main` pushed to GitHub as `ab2dade`** on Dhruv's instruction. For several hours the `src/ui`
+  design pass existed as three unpushed local commits with no PR and no remote — good work living
+  on exactly one disk. Suite verified green at **689 passed, 1 xfailed** before the push. Note it
+  was a direct push to `main`, not the bus PR flow.
+
+### Operational lessons, all learned the hard way today
+- **`pkill -f "uvicorn src.service.api:app"` kills every copy of this app on the machine.** Two
+  agents were serving from this Mac (8777 and 8766); each one's restart killed the other's server.
+  I reported the app as live and it was dead a minute later — twice — before diagnosing it. The
+  tell was that *both* servers vanished together. A server that must survive someone else's
+  cleanup should be launched through a wrapper calling `uvicorn.run()` in-process, so its command
+  line carries no `uvicorn` token to match.
+- **Two agents in one checkout is the hazard; the ports were a symptom.** Templates and `static/`
+  are read per request, so the live server was serving a second agent's *uncommitted* WIP to the
+  Omen with nobody intending it. A `git checkout` there swaps files mid-request. Worktrees exist
+  for this (#64) and were not used.
+- **Bind to the Tailscale IP, not `0.0.0.0`.** `--host 100.80.210.100` reaches the Omen over the
+  tailnet and stays invisible to the local wifi. Verified by curling from the Omen rather than
+  assuming tailnet routing worked.

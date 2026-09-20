@@ -6,8 +6,11 @@ disagree about what is true *now*, **STATE wins** — the worklog only explains 
 Note for bus workers: this is the *project* snapshot. The bus's lane/claim state lives in
 `docs/STATE.md` and is written only under the `claim/state` lock. Two different files, on purpose.
 
-Last updated: 2026-09-20 afternoon (mac worker; the design node is ACTIVE again and has been
+Last updated: 2026-09-20 late afternoon (mac worker; the design node is ACTIVE again and has been
 shipping steadily since 2026-09-18 — #65, #68, #70, #72, #74, #76, #78, #79)
+
+**Two things changed today that invalidate older notes: real data is loaded (see The data
+situation) and `main` is pushed to GitHub at `ab2dade`.**
 
 ## Deadline + time remaining
 **UNKNOWN — the deadline has MOVED and the new one is not recorded anywhere yet.**
@@ -54,6 +57,14 @@ modules.
   - Unchanged on purpose, against the design skills' advice: no web font, nothing below the
     three-metre projector floor, no network call beyond the API, and the em-dash placeholders
     (here a data glyph, not prose styling).
+- **`main` is pushed and in sync: `origin/main` = `ab2dade`** (2026-09-20, on Dhruv's explicit
+  instruction to "merge with github"). For a few hours the `src/ui` design pass existed only as
+  three unpushed local commits with no PR and no remote — one disk, no backup. It is now on
+  GitHub. Note this was a direct push to `main`, not the bus PR flow.
+- **A server is running on the tailnet** at <http://100.80.210.100:8777> (landing) and `/simulator`,
+  bound to the Tailscale interface so the Omen (`100.120.107.76`) can reach it and the local LAN
+  cannot. Verified from the Omen. It serves out of the main checkout, so whatever is checked out
+  there is what it shows.
 - **Nothing else is in flight.** Every PR that was open has been merged or closed. The only open PR is
   **#4** (`claim/1`), the standing canary — **never merge it**; the protocol depends on it staying
   open.
@@ -101,23 +112,57 @@ modules.
   documented GUESS that three lanes were built on.
 
 ## The data situation — read before writing any demo
-**This changed materially on 2026-09-18 and the old warning no longer applies verbatim.**
+**This changed materially on 2026-09-20: `fetch()` HAS NOW BEEN RUN. Real German data is loaded.**
+Every earlier warning that `data/raw/` is empty is void.
 
-`fetch()` is now **wired for all five sources** — `charge_points`, `smard_load`, `epex_day_ahead`,
-`generation_mix`, `dwd_weather` (`_FETCH_WIRED`, #68). The parsers were rewritten against real
-export shapes, and `tests/src/data/fixtures/` now holds genuine `smard_real_*.csv` and
-`dwd_real_*` files alongside the synthetic ones.
+All five sources were downloaded live and canonicalised on 2026-09-20. `/api/health` reports
+`"status":"ok"`:
 
-**But `data/raw/` is still EMPTY — nobody has actually run `fetch()`.** So at this instant every
-number the app can show is still fixture-derived. The difference from before is that the gap is now
-one command wide rather than a body of unwritten code:
+| table | rows | window |
+|---|---|---|
+| `sites` | 75,582 | BNetzA charge-point registry (53 MB raw CSV) |
+| `grid_load` | 6,144 | 2026-07-14T22:00Z → 2026-09-16T21:45Z |
+| `prices` | 6,144 | same |
+| `carbon` | 6,144 | same |
+| `weather` | 316,168 | 2025-03-19 → 2026-09-19, 15 DWD stations |
+| `balancing` | **null** | never wired — still synthetic, see below |
+
+6,144 = 64 days x 96 intervals exactly, so the 15-minute grid is intact with no holes. The values
+are plausible and were checked rather than assumed: German load 35.5–64.8 GW; carbon 352.2 g/kWh
+mean (**not** the 182.8 the old mixed-header defect produced); 74 negative-price intervals survived
+rather than being scrubbed, which is correct — negative day-ahead prices are valid data.
+
+A real 200-site scenario for 2026-09-10 has been built end-to-end and is cached on disk:
+**baseline peak 1467.4 kW → optimised 1305.2 kW**, zero deadline misses, zero envelope violations.
+
+**`data/` is gitignored, so a fresh checkout or a new worktree has none of it.** Rebuild with:
 
 ```sh
-python3 -c "from datetime import date; from src.data import api; api.fetch('smard_load', start=date(...), end=date(...))"
+python3 -c "
+from datetime import date
+from src.data import api
+S, E = date(2026,7,15), date(2026,9,16)
+for src in ['charge_points','smard_load','epex_day_ahead','generation_mix','dwd_weather']:
+    api.fetch(src, start=S, end=E); api.canonicalise(src)
+"
 ```
 
-**Run it, then re-check the demo figures.** Until someone does, do not describe any figure as
-measured German grid data.
+**The forecast needs at least 10 days of history before the scenario day.** A window starting
+2026-09-01 fails a 2026-09-10 scenario with a 503 that names the shortfall exactly; that is why the
+window above starts in mid-July. The error messages in this lane are good — read them, they name
+the fix.
+
+**What is still NOT real, and must be said out loud to a judge:**
+- `capacity_revenue_eur`, `net_eur`, `pool_firm_mw` and `peakers_displaced` all come back **`null`**
+  on a real run, because the `balancing` table was never built and pooling degraded. **The revenue
+  line the pitch leads with currently shows nothing at all.** That is the biggest open gap now.
+- Forecast accuracy on real data is **32.0%** (WAPE 0.68). It does beat both baselines
+  (seasonal-naive 1.17, climatology 0.82) and coverage is well calibrated at 95.8% against a 90%
+  target — but 32% is low, off 28 days of history and synthetic sessions. Do not quote it as a
+  strength without the comparison beside it.
+- The landing page's disclosure line ("grid load, weather, electricity prices and registered
+  charging locations are real public data") **was false this morning and is true now.** It became
+  true by running `fetch()`, not by editing the page.
 
 Still true, and unchanged:
 - **Charging sessions are synthetic by necessity.** Nobody publishes them; the organizers hand out
@@ -139,26 +184,37 @@ Still true, and unchanged:
   "earlier than the 20th" framing this bullet used to carry is void — see Deadline above.)
 
 ## Next intended step
-**Run `fetch()` and put real German data through the engine.** The code is wired (#68); nobody has
-executed it, so `data/raw/` is empty. This is a command and a verification pass, not a build — and
-it is still the single highest-value move, because it turns "here is our model" into "here is
-Munich on a real day, with real prices".
+**`DEMO-0001` — write a demo scenario and actually run it.** `fetch()` is DONE, so the old top
+item is closed. The engine now has real German data behind it and a served UI in front of it; what
+is missing is a scripted path a person can walk a judge through. `CLAUDE.md` makes a broken or
+absent demo outrank new features.
 
 Then, in order:
-1. **Confirm the new deadline with Dhruv** before sequencing anything else.
-2. **`DEMO-0001`** — still no scenario written. Write it **and actually run it**, stating plainly
-   which figures are synthetic. `CLAUDE.md` makes a broken demo outrank new features.
-3. **#43 finding 1** (the repo's one `xfail`) — `reduction_event_input` is read at `src/ui/api.py`
-   and produced nowhere in `src/`. **This is not a bug fix.**
-   `tests/integration/test_no_dead_context_keys.py` records that `src/service` never called
-   `src.ui.render()` from any HTTP route, so there was no HTML glue to hang the route on. #79 has
-   since added a served UI layer, so **re-check whether that premise still holds** before either
-   fixing it or re-justifying the `xfail`.
-4. **#50 items 2b/2c** — DWD product schema and the invented `DWD-BER` station ids. #68 rewrote
-   much of this lane, so **re-verify what is still outstanding** rather than trusting the issue text.
-5. **#44** market input-validation — filed explicitly **unverified**; verify each of the six
+1. **Confirm the new deadline with Dhruv** before sequencing anything else. Still unknown.
+2. **Decide what to do about the null revenue line.** `capacity_revenue_eur` is `null` on every
+   real run because `balancing` was never built (#51: no regelleistung.net account). Either build a
+   documented synthetic balancing table and label it as such in the UI, or remove the revenue claim
+   from the pitch. Leaving a headline figure blank in front of a judge is the worst of the three.
+3. **#43 finding 1 — RE-VERIFIED 2026-09-20, the premise still holds.** The question was whether
+   #79's served UI layer invalidated it. It does not: `src/service` serves only `ui.render_page()`
+   for the two standalone pages (`landing`, `simulator`), and **`ui.render()` still has zero callers
+   anywhere in `src/service`**. The five context-driven Jinja screens (`map`, `day`, `call`,
+   `pooling`, `ledger`) are orphaned — all five 404 on the live app, confirmed by probe. So the
+   `xfail` is still correctly justified and `reduction_event_input` is still produced by nothing.
+   **Decide: route those five screens, or delete them.** They are dead weight either way, and the
+   #66 work on `default_reduction_event()` is currently unreachable from the running app.
+4. **`app-simulator.js:208` has a dead ternary**: `{ phase: app.dispatchResult ? 'optimised' :
+   'optimised' }` — both branches identical, should be `: 'baseline'`. Because `setLoad()` branches
+   on `phase` (`app-scene.js:199-203`), the 3D twin looks **identical before and after a dispatch**
+   in the simulator: the transformer light can never go amber and the chargers never reach the
+   brighter baseline intensity. `app-story.js:140/145` does it correctly, which confirms the intent.
+   Small fix, judge-visible effect.
+5. **#50 items 2b/2c** — DWD product schema and the invented `DWD-BER` station ids. #68 rewrote much
+   of this lane and real DWD files have now been parsed successfully, so **re-verify what is still
+   outstanding** rather than trusting the issue text.
+6. **#44** market input-validation — filed explicitly **unverified**; verify each of the six
    findings before fixing. Then **#31** (`src/voice`, still a stub), then p2s **#35** / **#29**.
-6. **Release the six stale claim refs** (below).
+7. **Release the six stale claim refs** (below).
 
 ## Working notes for whoever picks this up
 - **CI is dead until the GitHub bill is paid** (see In flight). Verify locally; a PR with no green
@@ -187,6 +243,22 @@ Then, in order:
 - **A probe must reproduce the real environment.** A browser check of a canvas hit-test used a
   border-less canvas; the real CSS sets `border: 2px solid`, which was exactly where the
   remaining bug was. The probe passed and the page was still wrong.
+- **Running the app: bind to the Tailscale IP, not `0.0.0.0` and not `127.0.0.1`.**
+  `uvicorn src.service.api:app --host 100.80.210.100 --port 8777` makes it reachable from the Omen
+  over the tailnet while staying invisible to whatever local wifi the Mac is on. `127.0.0.1` is
+  Mac-only; the Omen cannot see it.
+- **`pkill -f "uvicorn src.service.api:app"` kills EVERY copy of this app on the machine, not your
+  own.** Two agents were running servers on this Mac (8777 and 8766) and each restart by one killed
+  the other's. If you need a server that survives someone else's cleanup, launch it through a
+  wrapper that calls `uvicorn.run()` in-process so your command line carries no `uvicorn` token.
+- **Two agents sharing one checkout is the real hazard, not the ports.** Jinja templates and
+  `static/` are read per request, so a live server serves whatever is checked out *right now* — a
+  second agent's uncommitted work-in-progress was being served to the Omen without anyone
+  intending it, and a `git checkout` would have swapped files mid-request. Work in a worktree:
+  `git worktree add ~/Dhruv/worktrees/munich-expo-hackathon/<branch> -b <branch>`.
+- **The scenario cache is on disk** at `data/derived/service/<id>.json` and carries an inputs
+  fingerprint, so it survives a restart and will not serve a result mixed across two generations of
+  input. A pre-warmed scenario means the page loads instantly instead of running a multi-minute LP.
 - **Verify a cross-lane seam by building a scratch worktree holding both lanes** and running one
   lane's suite against the other's real code. `tests/integration/` now automates the known cases,
   but a new seam still needs this by hand first.
