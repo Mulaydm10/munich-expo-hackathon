@@ -86,7 +86,38 @@ def test_there_are_modules_to_scan() -> None:
     assert len(MODULES) >= 5
     assert {p.name for p in MODULES} >= {
         "payload.js", "screen-call.js", "screen-day.js", "screen-map.js",
+        "app-control.js", "app-motion.js",
     }
+
+
+def test_control_skeletons_wait_for_backend_status_or_loaded_figures() -> None:
+    js = _code_only(source("app-control.js"))
+    assert "8000" not in js
+    assert "m-status" in js
+    assert "data-loaded" in js
+    assert "90000" in js
+
+
+def test_control_figure_flashes_exclude_per_tick_labels() -> None:
+    js = _code_only(source("app-control.js"))
+    assert "cursor-time" in js
+    assert "m-clock" in js
+    assert "closest('.scrubber, .playbar')" in js
+
+
+def test_hero_exit_keeps_actions_opaque() -> None:
+    js = _code_only(source("app-motion.js"))
+    hero = re.search(r"gsap\.to\('\.hero-copy',\s*\{(.*?)\n\s*\}\);", js, re.S)
+    assert hero is not None
+    assert "opacity" not in hero.group(1)
+    assert ":not(.hero-actions)" in js
+
+
+@pytest.mark.parametrize("module", ["app-control.js", "app-motion.js"])
+def test_motion_modules_have_progressive_enhancement_guards(module: str) -> None:
+    js = _code_only(source(module))
+    assert "if (!gsap" in js
+    assert "reduced" in js
 
 
 @pytest.mark.parametrize("module", MODULES, ids=lambda p: p.name)

@@ -45,30 +45,47 @@ function bootSkeletons() {
   if (!figures.length) return;
 
   document.body.classList.add('booting');
+  const figureSet = new Set(figures);
+  let loaded = [...figures].filter((node) => node.hasAttribute('data-loaded')).length;
+  let finished = false;
+  let timer;
 
   const settle = (node) => {
+    if (!figureSet.has(node) || node.hasAttribute('data-loaded')) return;
     node.setAttribute('data-loaded', '');
+    loaded += 1;
     // An em-dash that is genuinely the API's answer keeps the `.missing`
     // treatment the base sheet already gives it. We only stop pretending it is
     // still loading.
   };
 
+  const status = document.getElementById('m-status');
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    figures.forEach(settle);
+    document.body.classList.remove('booting');
+    observer.disconnect();
+    clearTimeout(timer);
+  };
+
   const observer = new MutationObserver((records) => {
     for (const r of records) {
       const node = r.target.nodeType === 3 ? r.target.parentElement : r.target;
-      if (node && !node.hasAttribute('data-loaded')) settle(node);
+      settle(node);
     }
+    if (status?.textContent.trim().toLowerCase() === 'failed' || loaded === figures.length) finish();
   });
   figures.forEach((n) => observer.observe(n, { childList: true, characterData: true, subtree: true }));
+  if (status) {
+    observer.observe(status, { childList: true, characterData: true, subtree: true });
+  }
 
   // Failsafe: a backend that never answers must not leave the screen shimmering
   // forever, because a permanent skeleton is a lie about work still happening.
   // After this the figures fall back to their honest em-dash.
-  setTimeout(() => {
-    figures.forEach(settle);
-    document.body.classList.remove('booting');
-    observer.disconnect();
-  }, 8000);
+  timer = setTimeout(finish, 90000);
+  if (status?.textContent.trim().toLowerCase() === 'failed' || loaded === figures.length) finish();
 }
 
 /* ---------- spotlight borders ---------- */
@@ -103,12 +120,21 @@ function enterPanels() {
    a hairline under the value: it reads at three metres, and it fades, so a
    screen that has settled shows no highlight at all. */
 function flagChangedFigures() {
-  const figures = document.querySelectorAll(
+  const figures = [...document.querySelectorAll(
     '.metric .v, .kv .v, .cmdbar .meta b, #site-count, #w-count, #warn-count',
-  );
+  )].filter((node) => (
+    node.id !== 'cursor-time' &&
+    node.id !== 'm-clock' &&
+    !node.closest('.scrubber, .playbar')
+  ));
   if (!figures.length) return;
 
+  const lastFlash = new WeakMap();
   const flash = (node) => {
+    const now = performance.now();
+    const last = lastFlash.get(node);
+    if (last !== undefined && now - last < 600) return;
+    lastFlash.set(node, now);
     // The element keeps its own colour; only the wash moves. Animating colour
     // on the text itself would fight the `.missing` state, which must stay
     // visually distinct from a number at all times.
