@@ -274,6 +274,10 @@ table.list tbody tr:hover td { background: #111621; }
 
 #map { width: 100%; height: 230px; display: block; border-radius: 4px; background: #060910; cursor: crosshair; }
 
+/* Both of these were nudged off the old raised panel; they belong flush too. */
+body.control #map,
+body.control .twin { background: var(--navy-900); }
+
 .twin { position: relative; height: 210px; border-radius: 4px; overflow: hidden; background: #060910; }
 .twin .t-time { position: absolute; left: 10px; top: 8px; font-family: var(--mono); font-size: 13px; color: var(--cyan); }
 
@@ -354,4 +358,647 @@ progress { width: 100%; height: 8px; }
   .workspace { grid-template-columns: minmax(0, 1fr); }
   .chartwrap { height: auto; min-height: 560px; }
   #chart { min-height: 380px; }
+}
+
+/* ==========================================================================
+   LANDING — depth pass
+   --------------------------------------------------------------------------
+   Appended, not rewritten: everything above is the working system and stays
+   the source of truth. This block adds the landing's depth, rhythm and motion
+   scaffolding, and overrides only where it names a selector again.
+
+   Three constraints from contracts/src/ui.md outrank any aesthetic rule here,
+   and shaped every decision below:
+     1. No web font. The system stack is not a compromise to be fixed — a font
+        that fails on conference wifi is a blank projector. Refinement comes
+        from tracking, optical scale and rhythm instead.
+     2. Readable at three metres. Nothing here reduces a font size, thins a
+        structural rule below 1px, or drops contrast on a figure.
+     3. Loads with the API and nothing else. No CDN font, no icon set, no
+        analytics. The grain is a data URI; the orbs are gradients.
+   ========================================================================== */
+
+:root {
+  /* House easing. A mass arriving and settling — never linear, never ease-in-out. */
+  --ease-out: cubic-bezier(0.22, 0.61, 0.24, 1);
+  --ease-inout: cubic-bezier(0.65, 0, 0.35, 1);
+
+  /* Concentric radii for the nested-bezel cards: inner = outer − shell padding,
+     so the two curves stay parallel instead of drifting. */
+  --r-shell: 18px;
+  --r-core: 12px;
+  --shell-pad: 6px;
+
+  /* Vertical rhythm. One scale, used everywhere, so spacing reads as intentional. */
+  --space-section: clamp(88px, 9vw, 168px);
+}
+
+/* ---------- atmosphere ------------------------------------------------- */
+
+/* Two dim orbs well below the content. Fixed and pointer-events:none so they
+   never enter the scroll or hit-test path. Sized in vmax so the composition
+   holds from a laptop to a 1920×1080 projector. */
+body.landing::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(58vmax 42vmax at 12% -8%, rgba(90, 138, 245, 0.16), transparent 62%),
+    radial-gradient(46vmax 38vmax at 96% 8%, rgba(70, 201, 221, 0.10), transparent 60%),
+    radial-gradient(52vmax 46vmax at 62% 108%, rgba(90, 138, 245, 0.07), transparent 66%);
+}
+
+/* Film grain. An SVG feTurbulence as a data URI — no network, ~1 KB, and it
+   kills the flat-gradient banding that makes a dark page look synthetic on a
+   projector's 8-bit panel. Fixed layer only (never on scrolling content). */
+body.landing::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  opacity: 0.035;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* Content rides above both layers. */
+.landing .hero,
+.landing .sections,
+.landing .hover-card,
+.landing footer.site,
+#scroll-progress { position: relative; z-index: 2; }
+
+/* Read-progress hairline. Transform-only, driven by ScrollTrigger. */
+#scroll-progress {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  height: 2px;
+  z-index: 60;
+  background: linear-gradient(90deg, var(--blue), var(--cyan));
+  transform: scaleX(0);
+  transform-origin: left center;
+  pointer-events: none;
+}
+
+/* ---------- typography: presence without a web font --------------------- */
+
+/* Optical tracking. Display type at this size needs negative tracking to stop
+   looking loose; small caps-y labels need positive. The system stack responds
+   to this as well as any licensed face does. */
+.hero-copy h1 {
+  letter-spacing: -0.032em;
+  font-weight: 620;
+  text-wrap: balance;
+}
+
+/* Per-line overflow boxes: app-motion.js slides each line up out of its own
+   mask. With JS off the spans sit at rest and nothing is clipped. */
+.hero-copy h1 .line-mask {
+  display: block;
+  overflow: hidden;
+  padding-bottom: 0.06em;   /* descenders must not be shaved by the mask */
+}
+.hero-copy h1 .line-mask > span { display: block; }
+
+/* The second line carries the argument — it gets the accent, so the headline
+   has a focal point instead of two equal halves. */
+.hero-copy h1 .accent {
+  background: linear-gradient(96deg, var(--ink) 34%, #8fd8e6 96%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* Eyebrow above the headline. Establishes what this is before the claim lands. */
+.eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  align-self: start;
+  font-size: 13px;
+  font-weight: 620;
+  letter-spacing: 0.17em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+  border: 1px solid var(--line);
+  border-radius: 100px;
+  padding: 6px 15px;
+  background: rgba(12, 16, 25, 0.7);
+}
+
+/* A rule that draws itself under the headline block. */
+.hero-rule {
+  height: 1px;
+  width: min(520px, 62%);
+  background: linear-gradient(90deg, rgba(90, 138, 245, 0.85), rgba(70, 201, 221, 0.25) 58%, transparent);
+}
+
+/* ---------- nested-bezel cards ----------------------------------------- */
+
+/* The shell is the tray; .panel is the plate sitting in it. Two enclosures with
+   concentric radii read as machined hardware rather than a div with a border —
+   this is the single biggest reason the old flat cards looked generated. */
+.panel-shell {
+  background: rgba(255, 255, 255, 0.022);
+  border: 1px solid rgba(255, 255, 255, 0.055);
+  border-radius: var(--r-shell);
+  padding: var(--shell-pad);
+  transition: border-color 420ms var(--ease-out), background 420ms var(--ease-out), transform 520ms var(--ease-out);
+}
+.panel-shell:hover {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(70, 201, 221, 0.3);
+  transform: translateY(-3px);
+}
+/* The plate reads as RECESSED into its tray, not raised out of it, and its
+   surface is the page surface. The three sketch canvases are transparent
+   (`clearRect`), so the old lighter gradient sat behind every plot and stole
+   contrast from the series drawn on it. Flush to --navy-900 the quantile band,
+   the compare lines and the pooling curve carry the full range, and the tray's
+   hairline is what says "card". */
+.panel-shell > .panel {
+  border-radius: var(--r-core);
+  height: 100%;
+  margin: 0;
+  background: var(--navy-900);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.55);
+}
+
+/* The canvases inherit the plate, so nothing sits on its own field. */
+.panel-shell > .panel canvas { background: transparent; }
+
+/* Panel heads get a hairline under them so the label reads as a header, not a
+   floating caption. */
+.panel-shell > .panel > header {
+  padding-bottom: 11px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+/* Figures: the value is the thing on the slide, so it gets the optical weight. */
+.panel-shell .kv { padding: 2px 0; }
+.panel-shell .kv .v { letter-spacing: -0.015em; }
+
+/* ---------- asymmetric evidence row ------------------------------------ */
+
+/* Three equal columns is the shape every generated page lands on. The forecast
+   panel is the one with the real claim in it, so it takes the width and the
+   other two stack beside it. Collapses to the original single track under
+   1100px, where equal columns are correct again. */
+@media (min-width: 1100px) {
+  .sections .grid-3 {
+    grid-template-columns: 1.42fr 1fr;
+    grid-template-rows: auto auto;
+    gap: 20px;
+  }
+  .sections .grid-3 > *:nth-child(1) { grid-row: span 2; }
+}
+
+.sections { gap: 46px; padding-block: var(--space-section); }
+
+/* ---------- buttons: pressure and a nested arrow ------------------------ */
+
+.landing .btn {
+  border-radius: 100px;
+  transition:
+    background 340ms var(--ease-out),
+    border-color 340ms var(--ease-out),
+    box-shadow 340ms var(--ease-out);
+}
+.landing .btn:active { transform: scale(0.985); }
+
+.landing .btn.primary {
+  padding-right: 8px;                 /* the arrow disc sits flush in the inner padding */
+  box-shadow: 0 10px 30px -14px rgba(90, 138, 245, 0.75);
+}
+.landing .btn.primary:hover { box-shadow: 0 14px 38px -14px rgba(90, 138, 245, 0.9); }
+
+/* Button-in-button: the arrow lives in its own disc, never naked beside the text. */
+.btn .disc {
+  width: 30px; height: 30px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: rgba(5, 10, 22, 0.16);
+  font-size: 15px;
+  line-height: 1;
+  transition: transform 420ms var(--ease-out), background 420ms var(--ease-out);
+}
+.btn:hover .disc { transform: translate(2px, -1px) scale(1.06); background: rgba(5, 10, 22, 0.26); }
+.btn.ghost .disc, .btn:not(.primary) .disc { background: rgba(255, 255, 255, 0.07); }
+
+/* ---------- scrubber ---------------------------------------------------- */
+
+/* Fixed-position glass is safe here; it is not a scrolling container. */
+.scrubber {
+  border-radius: var(--r-shell);
+  border-color: rgba(255, 255, 255, 0.075);
+  background: rgba(8, 13, 24, 0.64);
+  backdrop-filter: blur(14px);
+  box-shadow: 0 22px 60px -34px rgba(0, 0, 0, 0.95);
+}
+
+/* ---------- disclosure -------------------------------------------------- */
+
+/* Was two full-width hairlines top and bottom — the most template-looking
+   element on the page. One accent rule on the left reads as a citation. */
+.sections .disclosure {
+  border: 0;
+  border-left: 2px solid rgba(90, 138, 245, 0.5);
+  padding: 4px 0 4px 26px;
+  max-width: 96ch;
+}
+
+footer.site {
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  margin-top: 18px;
+}
+
+/* ---------- motion safety ---------------------------------------------- */
+
+/* The rule at the top of this file already flattens durations. These are the
+   states app-motion.js would otherwise drive: it returns early under reduced
+   motion, so the resting values must already be the finished frame. */
+@media (prefers-reduced-motion: reduce) {
+  #scroll-progress { display: none; }
+  .panel-shell:hover { transform: none; }
+  .btn:hover .disc { transform: none; }
+}
+
+/* ==========================================================================
+   CONTROL ROOM — depth pass
+   --------------------------------------------------------------------------
+   Scoped to body.control so nothing here reaches the landing, which runs at a
+   different density entirely.
+
+   The landing is VISUAL_DENSITY 3; this screen is 9. That single difference
+   drives every choice below, and it is why the landing's big nested trays are
+   NOT reused here: at cockpit density, container chrome competes with the data
+   it contains. Hairlines, one tight radius, and mono numerals do the work.
+
+   Still bound by contracts/src/ui.md: readable at three metres, no web font,
+   no network beyond the API, zero and unknown never look alike.
+   ========================================================================== */
+
+body.control {
+  --r-ctl: 8px;                 /* ONE radius for every surface on this screen */
+  --hair: rgba(255, 255, 255, 0.06);
+  --hair-lit: rgba(255, 255, 255, 0.11);
+}
+
+/* ---------- surfaces ---------------------------------------------------- */
+
+/* A panel here is a plate, not a tray: one hairline, one top highlight, and a
+   shadow tinted to the background rather than pure black (a black shadow on a
+   navy ground reads as a hole). */
+/* The panel surface is the PAGE surface. Every chart on this screen is a
+   transparent canvas (`clearRect`, never a fill), so a panel with its own
+   lighter gradient put each plot on a raised field that competed with the ink
+   in it: the eye read the box before the line. Flush to --navy-900, the
+   hairline alone carries the structure and the series get the whole contrast
+   budget. This is the cockpit rule from the density scale -- at 8-10, card
+   boxes are dropped and 1px lines separate data. */
+body.control .panel {
+  border-radius: var(--r-ctl);
+  border-color: var(--hair-lit);
+  background: var(--navy-900);
+  box-shadow: none;
+}
+
+/* Rail panels scroll inside their column. A header that scrolls away takes the
+   label of the number you are reading with it, which on a projector is the
+   difference between evidence and a bare figure. */
+body.control .rail .panel > header {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  margin: -16px -18px 12px;
+  padding: 13px 18px 11px;
+  background: var(--navy-900);
+  border-bottom: 1px solid var(--hair);
+  border-radius: var(--r-ctl) var(--r-ctl) 0 0;
+}
+
+/* ---------- numerals ---------------------------------------------------- */
+
+/* Cockpit rule: every figure is mono. Columns of kW and EUR only line up if the
+   glyphs are one width, and at three metres a misaligned column reads as noise.
+   The labels stay in the sans stack so the two never blur together. */
+body.control .metric .v,
+body.control .kv .v,
+body.control .cmdbar .meta b,
+body.control table.list td {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.005em;
+}
+body.control .metric .v { letter-spacing: -0.02em; }
+body.control .metric .u,
+body.control .kv .k,
+body.control table.list th { font-family: var(--sans); }
+
+/* An unknown is italic sans against mono figures, so it cannot be scanned as a
+   number at any distance. Reinforces `.missing` from the base sheet. */
+body.control .missing,
+body.control .assumption-value.missing {
+  font-family: var(--sans);
+  font-style: italic;
+}
+
+/* ---------- command bar ------------------------------------------------- */
+
+body.control .cmdbar {
+  border-bottom-color: var(--hair-lit);
+  background: linear-gradient(180deg, #0b0f1a, var(--navy-800));
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.5), 0 10px 30px -22px rgba(0, 0, 0, 0.9);
+}
+body.control .cmdbar .brand { letter-spacing: 0.1em; font-size: 15px; }
+body.control .cmdbar .meta { font-size: 14px; }
+body.control .cmdbar .meta span { display: inline-flex; gap: 7px; align-items: baseline; }
+body.control .cmdbar .meta b { color: var(--ink); font-weight: 500; }
+
+/* ---------- controls ---------------------------------------------------- */
+
+/* Buttons stay rectangular here. Pills belong to the landing; at this density a
+   row of pills reads as decoration, and the flat edge packs tighter. */
+body.control .btn { border-radius: 5px; transition: background 160ms var(--ease-out), border-color 160ms var(--ease-out); }
+body.control .btn:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+
+/* A pressed toggle must be obvious across a room: filled, not just outlined. */
+body.control .btn[aria-pressed="true"] {
+  background: #122834;
+  border-color: var(--cyan);
+  color: #cdf4fb;
+  box-shadow: inset 0 0 0 1px rgba(70, 201, 221, 0.25);
+}
+
+/* The one destructive action on the screen carries the accent that means
+   "this changes the grid", and nothing else on the page uses it. */
+body.control .btn.primary#btn-dispatch { box-shadow: 0 8px 26px -14px rgba(90, 138, 245, 0.85); }
+
+/* ---------- site table -------------------------------------------------- */
+
+body.control table.list th {
+  position: sticky;
+  top: 0;
+  background: var(--navy-900);
+  z-index: 2;
+}
+body.control table.list td { border-top-color: var(--hair); }
+body.control table.list tbody tr { transition: background 130ms var(--ease-out); }
+body.control table.list tbody tr:hover td { background: #121a28; }
+
+/* Selection is a left marker plus a fill, never colour alone (lane contract). */
+body.control table.list tr.sel td { background: #142132; }
+body.control table.list tr.sel td:first-child {
+  box-shadow: inset 3px 0 0 var(--cyan);
+  padding-left: 9px;
+}
+
+/* ---------- rails ------------------------------------------------------- */
+
+/* The rails are the only scrolling regions. A default overlay scrollbar on a
+   dark panel is invisible until it moves, so judges cannot tell there is more
+   below; this one is always faintly present. */
+body.control .rail { scrollbar-width: thin; scrollbar-color: #26314a transparent; }
+body.control .rail::-webkit-scrollbar { width: 9px; }
+body.control .rail::-webkit-scrollbar-track { background: transparent; }
+body.control .rail::-webkit-scrollbar-thumb {
+  background: #26314a;
+  border-radius: 100px;
+  border: 2px solid var(--navy-900);
+}
+body.control .rail::-webkit-scrollbar-thumb:hover { background: #34425f; }
+
+/* ---------- dispatch + alert -------------------------------------------- */
+
+/* The dispatch panel arrives mid-demo. It gets the accent edge so the eye lands
+   on it without the presenter having to say "now look here". */
+body.control #p-dispatch {
+  border-color: rgba(90, 138, 245, 0.42);
+  box-shadow: 0 0 0 1px rgba(90, 138, 245, 0.14);
+}
+
+/* Alert is a whole-room state change, not a red button. Red edge on the bar and
+   a red seam down the workspace, so it is unmistakable from the back row. */
+body.control.alerting .cmdbar { border-bottom-color: #7e3030; }
+body.control.alerting .workspace { box-shadow: inset 0 3px 0 #8a2f2f; }
+
+/* ---------- dialogs ----------------------------------------------------- */
+
+body.control dialog {
+  border-radius: var(--r-ctl);
+  border-color: var(--hair-lit);
+  box-shadow: 0 50px 140px rgba(0, 0, 0, 0.8);
+}
+body.control dialog::backdrop { background: rgba(3, 6, 12, 0.78); }
+
+/* ---------- motion safety ---------------------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  body.control table.list tbody tr { transition: none; }
+}
+
+/* ---------- landing: spotlight border ----------------------------------- */
+
+/* Section 10's "Spotlight Border Card". The tray's hairline brightens where the
+   cursor is, so the card under inspection is lit from the pointer rather than
+   swapping to a hover colour wholesale. Driven by two custom properties that
+   app-motion.js writes; with no JS the fallback position is the card centre and
+   the effect simply never moves.
+
+   This is the one ornamental effect on the page. It earns its place because at
+   three metres a presenter pointing with the cursor is the only pointer the
+   room has. */
+.panel-shell {
+  --spot-x: 50%;
+  --spot-y: 0%;
+  position: relative;
+  isolation: isolate;
+}
+.panel-shell::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  padding: 1px;
+  background: radial-gradient(
+    22rem circle at var(--spot-x) var(--spot-y),
+    rgba(70, 201, 221, 0.55),
+    rgba(90, 138, 245, 0.16) 42%,
+    transparent 70%
+  );
+  /* Mask the fill away so only the 1px ring shows. */
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  opacity: 0;
+  transition: opacity 420ms var(--ease-out);
+}
+.panel-shell:hover::before { opacity: 1; }
+
+@media (prefers-reduced-motion: reduce) {
+  .panel-shell::before { transition: none; }
+}
+
+/* ==========================================================================
+   CONTROL ROOM — upgrade pass
+   --------------------------------------------------------------------------
+   Audit findings applied: no loading state, no press feedback, flat surfaces
+   with no texture, uniform radii, two font weights doing all the hierarchy,
+   symmetrical optical padding, 100vh instead of 100dvh, no spotlight.
+   ========================================================================== */
+
+/* ---------- z-index scale (was ad hoc) ---------------------------------- */
+/* Documented once so nothing reaches for an arbitrary 9999 again.
+   1 heartbeat · 2 table head · 3 sticky panel head · 4 grain
+   5 command bar · 50 copilot · 60 dialogs                                   */
+
+/* ---------- viewport stability ------------------------------------------ */
+
+/* 100vh is wrong on any browser with a retracting toolbar: the workspace gets
+   measured against a viewport that does not exist yet and the bottom rail is
+   clipped. dvh tracks the real box. */
+body.control .app { height: 100dvh; }
+
+/* ---------- texture ----------------------------------------------------- */
+
+/* The landing has grain; this screen was pure flat fill, which on a projector
+   bands badly across the large dark panels now that they are all one colour.
+   Same data-URI turbulence, lower opacity: this screen has far more surface. */
+body.control::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+  opacity: 0.022;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+body.control .cmdbar { z-index: 5; }
+
+/* ---------- radius rhythm ----------------------------------------------- */
+
+/* Was one radius on everything. Containers soften, the things inside them
+   tighten, so nesting reads as nesting. */
+body.control .panel { border-radius: 10px; }
+body.control #map,
+body.control .twin { border-radius: 6px; }
+body.control .btn { border-radius: 5px; }
+body.control .tag { border-radius: 4px; }   /* square-ish: a pill badge at this density is noise */
+
+/* ---------- weight hierarchy -------------------------------------------- */
+
+/* 400 and 650 were doing all the work. 500 for supporting figures and 550 for
+   column heads gives three steps instead of two, which is what lets a dense
+   screen have hierarchy without changing a single size. */
+body.control .kv .v { font-weight: 500; }
+body.control .metric .v { font-weight: 600; }
+body.control table.list th { font-weight: 550; letter-spacing: 0.09em; }
+body.control .panel h3 { font-weight: 600; letter-spacing: 0.11em; }
+
+/* ---------- optical padding --------------------------------------------- */
+
+/* Equal top and bottom padding reads as bottom-light, because the header rule
+   sits at the top. Bottom gets 2px more. */
+body.control .panel { padding: 14px 16px 18px; }
+body.control .rail .panel > header { margin: -14px -16px 12px; }
+
+/* ---------- the peak pair is the headline of this screen ----------------- */
+
+/* Three figures at near-equal weight meant the eye had nowhere to land. The
+   optimised peak is the claim; baseline is the comparison; delta is the
+   result. Size and colour now say so. */
+body.control .peakpair { gap: 30px; align-items: baseline; }
+body.control .peakpair .metric .v { line-height: 1; }
+body.control .peakpair .metric:nth-child(2) .v { color: var(--blue); }
+body.control .peakpair .metric:nth-child(3) .v { color: var(--lime); }
+body.control .peakpair .metric .k {
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+/* ---------- spotlight borders ------------------------------------------- */
+
+/* Same device as the landing, dimmer. In a live demo the cursor is the only
+   pointer the room has; the panel being discussed should say so. */
+body.control .panel {
+  --spot-x: 50%;
+  --spot-y: 0%;
+  position: relative;
+}
+body.control .panel::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: radial-gradient(
+    16rem circle at var(--spot-x) var(--spot-y),
+    rgba(70, 201, 221, 0.4), rgba(90, 138, 245, 0.1) 45%, transparent 72%
+  );
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  opacity: 0;
+  transition: opacity 380ms var(--ease-out);
+  pointer-events: none;
+}
+body.control .panel:hover::after { opacity: 1; }
+
+/* ---------- press feedback ---------------------------------------------- */
+
+/* Every control had a hover and no press. On a trackpad in front of judges the
+   press is the only confirmation the click registered before the data returns. */
+body.control .btn:active { transform: translateY(1px) scale(0.99); }
+body.control table.list tbody tr:active td { background: #182236; }
+body.control .src:active { transform: translateY(1px); }
+
+/* ---------- boot skeletons ---------------------------------------------- */
+
+/* Was: every figure renders as an em-dash until the API answers, so "loading"
+   and "the API has no value for this" looked identical -- the exact collapse
+   contracts/src/ui.md forbids, just in the time dimension.
+   Now: app-control.js adds .booting, and each figure shows a shimmer block of
+   the right shape until its real text arrives. JS adds the class and JS removes
+   it, so with no JS nothing shimmers and the em-dash behaviour is unchanged. */
+body.control.booting .metric .v:not([data-loaded]),
+body.control.booting .kv .v:not([data-loaded]),
+body.control.booting .cmdbar .meta b:not([data-loaded]) {
+  color: transparent;
+  position: relative;
+  border-radius: 3px;
+  background:
+    linear-gradient(90deg, #131a29 0%, #1d2739 38%, #131a29 76%) 0 0 / 220% 100%,
+    #131a29;
+  animation: skeleton 1.5s ease-in-out infinite;
+}
+/* Width is set per shape so the skeleton matches what lands, not a generic bar. */
+body.control.booting .metric .v:not([data-loaded]) { min-width: 5.5ch; }
+body.control.booting .kv .v:not([data-loaded]) { min-width: 4.5ch; }
+body.control.booting .cmdbar .meta b:not([data-loaded]) { min-width: 3.5ch; display: inline-block; }
+
+@keyframes skeleton {
+  0% { background-position: 120% 0; }
+  100% { background-position: -120% 0; }
+}
+
+/* ---------- smooth anchor movement -------------------------------------- */
+html { scroll-behavior: smooth; }
+
+/* ---------- motion safety ----------------------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  body.control.booting .metric .v:not([data-loaded]),
+  body.control.booting .kv .v:not([data-loaded]),
+  body.control.booting .cmdbar .meta b:not([data-loaded]) { animation: none; background: #131a29; }
+  body.control .panel::after { transition: none; }
+  body.control .btn:active { transform: none; }
 }
