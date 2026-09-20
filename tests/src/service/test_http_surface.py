@@ -47,6 +47,9 @@ TIMESERIES_ROW_KEYS = {
     "envelope_kw",
     "price_eur_mwh",
     "firm_kw",
+    "forecast_kw_q05",
+    "forecast_kw_q50",
+    "forecast_kw_q95",
 }
 
 
@@ -182,7 +185,10 @@ def test_map_has_one_row_per_site_with_lat_lon_firm_revenue_co2(client):
     rows = body["sites"]
     assert len(rows) == 2  # FEASIBLE is a two-site portfolio
     for row in rows:
-        assert {"site_id", "lat", "lon", "firm_kw", "revenue_eur", "co2_kg"} <= set(row)
+        assert {
+            "site_id", "lat", "lon", "firm_kw", "revenue_eur", "co2_kg",
+            "peak_kw_baseline", "peak_kw_optimised",
+        } <= set(row)
         assert row["lat"] is not None and row["lon"] is not None
     # the allocation rule is on the wire, not left for the reader to guess
     assert body["firm_kw_rule"] and body["revenue_allocation_rule"]

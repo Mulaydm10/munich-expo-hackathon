@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>FlexGrid — predict the charging peak</title>
+  <link rel="stylesheet" href="{{ STATIC }}/app.css">
+  <script type="importmap">{"imports":{"three":"{{ STATIC }}/vendor/three.module.js","three/addons/controls/OrbitControls.js":"{{ STATIC }}/vendor/OrbitControls.js"}}</script>
+</head>
+<body>
+  <section class="hero">
+    <div id="scene" aria-hidden="true"></div>
+    <img id="scene-fallback" src="{{ STATIC }}/depot-fallback.svg" alt="FlexGrid depot" style="display:none;position:absolute;inset:0;width:100%;height:100%;object-fit:cover">
+    <div class="hero-inner">
+      <div class="topline"><div class="brand"><span class="mark"></span> FLEXGRID</div><div><a class="btn ghost small" href="/simulator#evidence">Open technical evidence</a></div></div>
+      <div class="hero-copy">
+        <h1>Predict the charging peak.<br>Move it before it hits the grid.</h1>
+        <p class="sub">FlexGrid forecasts EV demand and schedules every vehicle around transformer limits, electricity prices, and departure deadlines.</p>
+        <div class="hero-actions"><a class="btn primary" href="/simulator">Enter live simulator</a><button class="btn" id="story60">Watch the story</button><button class="btn ghost small" id="skip-intro">Skip animation</button><span class="tag info" id="scene-state"><span class="dot"></span> scene loading</span></div>
+      </div>
+      <div class="overlay-copy" id="overlay"></div>
+      <div class="scrubber"><span class="faint mono" id="clock">—</span><input id="time" type="range" min="18" max="30" step=".25" value="20" aria-label="Time of day"><span class="dim">evening → morning</span></div>
+    </div>
+  </section>
+  <div class="hover-card" id="hover"></div>
+  <div class="sections">
+    <div class="grid-3">
+      <div class="panel"><header><h3>Forecast</h3><span class="tag info">q05–q95</span></header><canvas id="sk-forecast"></canvas><div class="rowlist"><div class="kv"><span class="k">Portfolio accuracy</span><span class="v" id="f-acc">—</span></div><div class="kv"><span class="k">WAPE</span><span class="v" id="f-wape">—</span></div><div class="kv"><span class="k">Coverage</span><span class="v" id="f-cov">—</span></div></div><p class="dim">Accuracy is 1 − WAPE on the portfolio load.</p></div>
+      <div class="panel"><header><h3>Schedule</h3><span class="tag ok">backend result</span></header><canvas id="sk-compare"></canvas><div class="rowlist"><div class="kv"><span class="k">Baseline peak</span><span class="v" id="s-base">—</span></div><div class="kv"><span class="k">Optimised peak</span><span class="v" id="s-opt">—</span></div><div class="kv"><span class="k">Infeasible sites</span><span class="v" id="s-inf">—</span></div></div></div>
+      <div class="panel"><header><h3>Grid</h3><span class="tag ok">pooled</span></header><canvas id="sk-pool"></canvas><div class="rowlist"><div class="kv"><span class="k">Pooled firm flexibility</span><span class="v" id="g-firm">—</span></div><div class="kv"><span class="k">Capacity revenue</span><span class="v" id="g-rev">—</span></div></div></div>
+    </div>
+    <p class="disclosure">Grid load, weather, electricity prices and registered charging locations are real public data. Charging sessions are reproducibly synthesized.</p>
+    <p class="dim">FlexGrid is not V2G, is not connected to real chargers, is not a live market participant, and is not TSO-certified.</p>
+  </div>
+  <footer class="site"><span>MunichTech EXPO Hackathon</span><a href="/simulator">EV flexibility control room →</a></footer>
+  <script type="module" src="{{ STATIC }}/app-story.js"></script>
+</body>
+</html>

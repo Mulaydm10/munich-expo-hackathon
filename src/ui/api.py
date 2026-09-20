@@ -7,7 +7,8 @@ This module is the lane's ONLY cross-lane surface: other lanes import
 interface this lane owes the rest of the project, and
 `contracts/CONVENTIONS.md` for units, time handling and the data layout.
 
-What this lane actually is: five Jinja2 templates (`src/ui/templates/`) and their
+What this lane actually is: five legacy Jinja2 screens plus landing/simulator pages
+(`src/ui/templates/`) and their
 hand-written ES modules (`src/ui/static/`), plus the small amount of Python needed to
 render those templates from data shaped like the `src/service` HTTP responses in
 `contracts/src/service.md`. `src/service` owns the FastAPI app and routing; it is
@@ -110,6 +111,7 @@ BERLIN_TZ = ZoneInfo("Europe/Berlin")
 
 # The five screens, in the order DEMO.md uses them (contracts/src/ui.md "Screens").
 SCREENS: tuple[str, ...] = ("map", "day", "call", "pooling", "ledger")
+PAGES: tuple[str, ...] = ("landing", "simulator")
 
 SCREEN_TITLES: dict[str, str] = {
     "map": "Map — every charge point",
@@ -730,6 +732,13 @@ def render(screen: str, context: Mapping[str, Any] | None = None) -> str:
                 ctx["reduction_event"] = computed
     template = jinja_env().get_template(_TEMPLATE_BY_SCREEN[screen])
     return template.render(**ctx)
+
+
+def render_page(page: str) -> str:
+    """Render one of the standalone landing or simulator pages."""
+    if page not in PAGES:
+        raise ValueError(f"unknown page {page!r}; must be one of {PAGES}")
+    return jinja_env().get_template(f"{page}.html").render()
 
 
 def static_assets_referenced(html: str) -> list[str]:

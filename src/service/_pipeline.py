@@ -527,7 +527,8 @@ def build(spec: ScenarioSpec, *, root=None, progress=None) -> tuple[dict, LiveSc
     doc = {
         "result": result,
         "timeseries": _timeseries(
-            day_index, baseline_by_t, optimised_by_t, envelope, prices_day, firm, pool_day
+            day_index, baseline_by_t, optimised_by_t, envelope, prices_day, firm, pool_day,
+            preds,
         ),
         "pooling": pooling_rows,
         "map": _map_rows(
@@ -1380,13 +1381,23 @@ def _balancing_for_product(balancing, spec, warns):
     return sub.sort_values("t").reset_index(drop=True)
 
 
-def _timeseries(day_index, baseline_by_t, optimised_by_t, envelope, prices_day, firm, pool_day):
+def _timeseries(
+    day_index, baseline_by_t, optimised_by_t, envelope, prices_day, firm, pool_day,
+    forecast_preds=None,
+):
     env_by_t = _by_t(envelope, "max_kw", day_index)
     firm_by_t = _by_t(firm, "firm_kw", day_index)
     price_by_t = prices_day.set_index("t")["price_eur_mwh"].reindex(day_index)
     pool_by_t = (
         pool_day.set_index("t")["pool_firm_kw"].reindex(day_index) if pool_day is not None else None
     )
+    forecast_by_t = {}
+    if forecast_preds is not None and len(forecast_preds):
+        forecast_by_t = (
+            forecast_preds.groupby("t")[["q05", "q50", "q95"]].sum(min_count=1)
+            .reindex(day_index)
+            .to_dict("index")
+        )
     rows = []
     for i, t in enumerate(day_index):
         rows.append(
@@ -1399,6 +1410,9 @@ def _timeseries(day_index, baseline_by_t, optimised_by_t, envelope, prices_day, 
                 # naive per-site sum; the pooled promise is the separate column beside it
                 "firm_kw": _f(firm_by_t.iloc[i]),
                 "pool_firm_kw": _f(pool_by_t.iloc[i]) if pool_by_t is not None else None,
+                "forecast_kw_q05": _f(forecast_by_t.get(t, {}).get("q05")),
+                "forecast_kw_q50": _f(forecast_by_t.get(t, {}).get("q50")),
+                "forecast_kw_q95": _f(forecast_by_t.get(t, {}).get("q95")),
             }
         )
     return rows
@@ -1413,6 +1427,12 @@ def _map_rows(sites, firm, optimised_load, baseline_day, carbon, totals, spec, w
     left for the reader to guess.
     """
     firm_by_site = firm.groupby("site_id")["firm_kw"].min()
+    baseline_by_site = baseline_day.groupby("site_id")["load_kw"].max()
+    optimised_by_site = (
+        optimised_load.groupby("site_id")["load_kw"].max()
+        if optimised_load is not None and len(optimised_load)
+        else {}
+    )
     total_firm = float(firm_by_site.sum())
     revenue = totals.get("capacity_revenue_eur")
     load = optimised_load if (spec.policy == "optimised" and optimised_load is not None) else baseline_day
@@ -1437,6 +1457,9 @@ def _map_rows(sites, firm, optimised_load, baseline_day, carbon, totals, spec, w
                 "firm_kw": site_firm,
                 "revenue_eur": _f(revenue * share) if (revenue is not None and share is not None) else None,
                 "co2_kg": co2_by_site.get(site_id),
+                "peak_kw_baseline": _f(baseline_by_site.get(site_id)),
+                "peak_kw_optimised": _f(optimised_by_site.get(site_id))
+                if optimised_load is not None else None,
             }
         )
     return {
