@@ -65,6 +65,13 @@ modules.
   bound to the Tailscale interface so the Omen (`100.120.107.76`) can reach it and the local LAN
   cannot. Verified from the Omen. It serves out of the main checkout, so whatever is checked out
   there is what it shows.
+- **`src/voice` is built (PRs #80, #81, merged 2026-09-20).** The lane that was 14 lines of stub is
+  now a real copilot: Featherless for the LLM answer, ElevenLabs for speech-to-text and
+  text-to-speech, upstream calls run off the event loop, provider messages surfaced rather than
+  swallowed. Suite went 689 -> **711 passed, 1 xfailed**. #80 also landed `src/ui` motion fixes.
+  **It needs `FEATHERLESS_API_KEY` and `ELEVENLABS_API_KEY`; neither is set on this Mac**, and the
+  lane degrades to text when they are absent. Before any demo that shows voice, decide whether keys
+  will exist on the day — and note the degraded path is the one currently exercised.
 - **Nothing else is in flight.** Every PR that was open has been merged or closed. The only open PR is
   **#4** (`claim/1`), the standing canary — **never merge it**; the protocol depends on it staying
   open.
@@ -213,18 +220,22 @@ Then, in order:
    of this lane and real DWD files have now been parsed successfully, so **re-verify what is still
    outstanding** rather than trusting the issue text.
 6. **#44** market input-validation — filed explicitly **unverified**; verify each of the six
-   findings before fixing. Then **#31** (`src/voice`, still a stub), then p2s **#35** / **#29**.
-7. **Release the six stale claim refs** (below).
+   findings before fixing. Then p2s **#35** / **#29**. (**#31 `src/voice` is no longer a stub** —
+   see below.)
+7. ~~Release the six stale claim refs~~ — **done 2026-09-20**, see Working notes.
 
 ## Working notes for whoever picks this up
 - **CI is dead until the GitHub bill is paid** (see In flight). Verify locally; a PR with no green
   tick right now means nothing was run, not that something failed.
-- **Six claim refs are still held on merged PRs**: `claim/50`, `claim/69`, `claim/71`, `claim/73`,
-  `claim/75`, `claim/77` — all fully contained in `main`. Release them by RENAME to
-  `merged/<n>-<sha8>`; `AGENTS.md` renames claim refs and never deletes them. Leave `claim/1`
-  (canary) and `claim/state` (lock) alone. **Never delete the `origin/merged/*` refs** — they are
-  protocol state the bus rebuilds from, not clutter. A previous session nearly deleted them as
-  tidy-up.
+- **All stale claim refs are released; the bus is at its correct steady state.** On 2026-09-20 the
+  last six (`claim/50`, `69`, `71`, `73`, `75`, `77`) were renamed to `merged/<n>-<sha8>`. Each was
+  confirmed an ancestor of `origin/main` with zero unmerged commits, the `merged/*` ref was created
+  and byte-compared to the claim tip *first*, and only then was the old name deleted — so no commit
+  was ever unreferenced. **Only `claim/1` (canary) and `claim/state` (lock) remain**, which is
+  correct. Note `#50` legitimately has two released refs (`merged/50-5a9a1d88` and
+  `merged/50-1a14d731`) because it was claimed twice after `Closes #50` auto-closed it with scope
+  remaining. **Never delete the `origin/merged/*` refs** — they are protocol state the bus rebuilds
+  from, not clutter. A previous session nearly deleted them as tidy-up.
 - **Claim worktrees live under `~/Dhruv/worktrees/munich-expo-hackathon/`** (#64). The thirteen
   stale ones from the 05–07 Sep build were removed on 2026-09-18; only `claim-1` (the standing
   canary) remains, which is correct. Merged local branches were deleted too — `claim/1` and

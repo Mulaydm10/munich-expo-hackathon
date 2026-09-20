@@ -335,3 +335,34 @@ Everything below is on `bot/join-real-lane-split` for the human to merge — des
 - **Bind to the Tailscale IP, not `0.0.0.0`.** `--host 100.80.210.100` reaches the Omen over the
   tailnet and stays invisible to the local wifi. Verified by curling from the Omen rather than
   assuming tailnet routing worked.
+
+## 2026-09-20 evening — the last six claim refs released (mac worker)
+
+- **`claim/50`, `69`, `71`, `73`, `75`, `77` renamed to `merged/<n>-<sha8>`.** All six were held on
+  PRs merged days ago (#68, #70, #72, #74, #76, #78). `docs/HANDOFF.md` warns that 15 refs were once
+  left held on merged PRs, which made unfinished work look claimed and blocked it; this clears the
+  last of that class. Only `claim/1` (canary) and `claim/state` (lock) remain — the correct steady
+  state.
+- **Order mattered, and was deliberate.** For each ref: confirm it is an ancestor of `origin/main`
+  with zero unmerged commits → create `merged/<n>-<sha8>` → re-fetch and byte-compare the new ref
+  against the claim tip → only then delete the old name. A rename done as delete-then-push would
+  leave the work unreferenced in between; done this way nothing was ever unreachable. Also checked
+  first that no open PR pointed at any of the six, since deleting such a branch closes its PR.
+- **`#50` correctly has two released refs** — `merged/50-5a9a1d88` and `merged/50-1a14d731`. Not a
+  mistake: the issue was claimed twice because `Closes #50` auto-closed it while scope remained.
+  Recorded so nobody later "tidies" one of them away as a duplicate.
+- **zsh ate the first attempt.** `origin/claim/$n:refs/heads/...` expands `$n:r` as a zsh parameter
+  modifier (strip extension), producing `origin/claim/50efs/heads/...` and a `fatal: invalid
+  refspec`. Braces (`${n}`) fix it. The push failed atomically so nothing partial landed, but the
+  lesson generalises: in zsh, always brace a variable that is followed by `:` in a refspec.
+- **Rebased onto six upstream commits that landed mid-task** (#80 motion fixes + `src/ui` skeleton
+  settling, #81 the `src/voice` copilot). No overlap with `STATE.md`/`worklog.md`, so the rebase was
+  clean. Suite re-verified after: **711 passed, 1 xfailed**, up from 689 on the new voice tests.
+- **`src/voice` is no longer a stub**, which retires the oldest "entire lane missing" item. It needs
+  `FEATHERLESS_API_KEY` and `ELEVENLABS_API_KEY`; neither is set here, so the degraded text path is
+  the one actually being exercised today.
+- **The running server reports a `git_sha` it is not running.** `/api/health` read `2594395` while
+  the process had been started before the voice code existed, and uvicorn without `--reload` does
+  not reload Python modules — only Jinja templates and `static/` are re-read per request. So
+  `/api/voice/health` 404'd on a tree that contains it. Restart after any Python-side merge, and do
+  not trust that `git_sha` as evidence of what is loaded.
