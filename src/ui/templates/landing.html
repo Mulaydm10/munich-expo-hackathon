@@ -4,19 +4,33 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>FlexGrid — predict the charging peak</title>
+  <meta name="description" content="FlexGrid forecasts EV charging demand and schedules every vehicle around transformer limits, electricity prices and departure deadlines.">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%2305070c'/><path d='M4 24 L10 24 L13 10 L16 10 L19 24 L28 24' fill='none' stroke='%235a8af5' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/><path d='M11 10 L18 10' stroke='%2346c9dd' stroke-width='3' stroke-linecap='round'/></svg>">
+  <meta name="color-scheme" content="dark">
   <link rel="stylesheet" href="{{ STATIC }}/app.css">
   <script type="importmap">{"imports":{"three":"{{ STATIC }}/vendor/three.module.js","three/addons/controls/OrbitControls.js":"{{ STATIC }}/vendor/OrbitControls.js"}}</script>
 </head>
-<body>
+<body class="landing">
+  {# Scroll-progress hairline. Driven by ScrollTrigger; scaleX(0) at rest, so with JS
+     off it is simply invisible rather than a stuck full-width bar. #}
+  <div id="scroll-progress" aria-hidden="true"></div>
+
   <section class="hero">
     <div id="scene" aria-hidden="true"></div>
     <img id="scene-fallback" src="{{ STATIC }}/depot-fallback.svg" alt="FlexGrid depot" style="display:none;position:absolute;inset:0;width:100%;height:100%;object-fit:cover">
     <div class="hero-inner">
-      <div class="topline"><div class="brand"><span class="mark"></span> FLEXGRID</div><div><a class="btn ghost small" href="/simulator#evidence">Open technical evidence</a></div></div>
+      <div class="topline"><div class="brand"><span class="mark"></span> FLEXGRID</div><div><a class="btn ghost small" href="/simulator#evidence">Open technical evidence <span class="disc" aria-hidden="true">↗</span></a></div></div>
       <div class="hero-copy">
-        <h1>Predict the charging peak.<br>Move it before it hits the grid.</h1>
+        <p class="eyebrow">MunichTech EXPO · Mobility &amp; Automotive</p>
+        {# Each line sits in its own overflow box so app-motion.js can slide it up from
+           behind the mask. Without JS the spans rest in place — nothing is clipped. #}
+        <h1>
+          <span class="line-mask"><span>Predict the charging peak.</span></span>
+          <span class="line-mask"><span class="accent">Move it before it hits the grid.</span></span>
+        </h1>
+        <div class="hero-rule" aria-hidden="true"></div>
         <p class="sub">FlexGrid forecasts EV demand and schedules every vehicle around transformer limits, electricity prices, and departure deadlines.</p>
-        <div class="hero-actions"><a class="btn primary" href="/simulator">Enter live simulator</a><button class="btn" id="story60">Watch the story</button><button class="btn ghost small" id="skip-intro">Skip animation</button><span class="tag info" id="scene-state"><span class="dot"></span> scene loading</span></div>
+        <div class="hero-actions"><a class="btn primary" href="/simulator">Enter live simulator <span class="disc" aria-hidden="true">→</span></a><button class="btn" id="story60">Watch the story</button><button class="btn ghost small" id="skip-intro">Skip animation</button><span class="tag info" id="scene-state"><span class="dot"></span> scene loading</span></div>
       </div>
       <div class="overlay-copy" id="overlay"></div>
       <div class="scrubber"><span class="faint mono" id="clock">—</span><input id="time" type="range" min="18" max="30" step=".25" value="20" aria-label="Time of day"><span class="dim">evening → morning</span></div>
@@ -24,15 +38,27 @@
   </section>
   <div class="hover-card" id="hover"></div>
   <div class="sections">
+    {# Each panel is wrapped in a .panel-shell tray (nested-bezel). The .panel itself and
+       every id inside it are untouched — app-story.js writes into them by id. #}
     <div class="grid-3">
-      <div class="panel"><header><h3>Forecast</h3><span class="tag info">q05–q95</span></header><canvas id="sk-forecast"></canvas><div class="rowlist"><div class="kv"><span class="k">Portfolio accuracy</span><span class="v" id="f-acc">—</span></div><div class="kv"><span class="k">WAPE</span><span class="v" id="f-wape">—</span></div><div class="kv"><span class="k">Coverage</span><span class="v" id="f-cov">—</span></div></div><p class="dim">Accuracy is 1 − WAPE on the portfolio load.</p></div>
-      <div class="panel"><header><h3>Schedule</h3><span class="tag ok">backend result</span></header><canvas id="sk-compare"></canvas><div class="rowlist"><div class="kv"><span class="k">Baseline peak</span><span class="v" id="s-base">—</span></div><div class="kv"><span class="k">Optimised peak</span><span class="v" id="s-opt">—</span></div><div class="kv"><span class="k">Infeasible sites</span><span class="v" id="s-inf">—</span></div></div></div>
-      <div class="panel"><header><h3>Grid</h3><span class="tag ok">pooled</span></header><canvas id="sk-pool"></canvas><div class="rowlist"><div class="kv"><span class="k">Pooled firm flexibility</span><span class="v" id="g-firm">—</span></div><div class="kv"><span class="k">Capacity revenue</span><span class="v" id="g-rev">—</span></div></div></div>
+      <div class="panel-shell"><div class="panel"><header><h3>Forecast</h3><span class="tag info">q05–q95</span></header><canvas id="sk-forecast"></canvas><div class="rowlist"><div class="kv"><span class="k">Portfolio accuracy</span><span class="v" id="f-acc">—</span></div><div class="kv"><span class="k">WAPE</span><span class="v" id="f-wape">—</span></div><div class="kv"><span class="k">Coverage</span><span class="v" id="f-cov">—</span></div></div><p class="dim">Accuracy is 1 − WAPE on the portfolio load.</p></div></div>
+      <div class="panel-shell"><div class="panel"><header><h3>Schedule</h3><span class="tag ok">backend result</span></header><canvas id="sk-compare"></canvas><div class="rowlist"><div class="kv"><span class="k">Baseline peak</span><span class="v" id="s-base">—</span></div><div class="kv"><span class="k">Optimised peak</span><span class="v" id="s-opt">—</span></div><div class="kv"><span class="k">Infeasible sites</span><span class="v" id="s-inf">—</span></div></div></div></div>
+      <div class="panel-shell"><div class="panel"><header><h3>Grid</h3><span class="tag ok">pooled</span></header><canvas id="sk-pool"></canvas><div class="rowlist"><div class="kv"><span class="k">Pooled firm flexibility</span><span class="v" id="g-firm">—</span></div><div class="kv"><span class="k">Capacity revenue</span><span class="v" id="g-rev">—</span></div></div></div></div>
     </div>
     <p class="disclosure">Grid load, weather, electricity prices and registered charging locations are real public data. Charging sessions are reproducibly synthesized.</p>
     <p class="dim">FlexGrid is not V2G, is not connected to real chargers, is not a live market participant, and is not TSO-certified.</p>
   </div>
-  <footer class="site"><span>MunichTech EXPO Hackathon</span><a href="/simulator">EV flexibility control room →</a></footer>
+  <footer class="site"><span>MunichTech EXPO Hackathon</span><a href="/simulator">EV flexibility control room <span class="disc" aria-hidden="true">→</span></a></footer>
+
+  {# Classic scripts: they execute during parse, so window.gsap is present before the
+     deferred module graph below runs. Vendored and pinned — static/vendor/README.md. #}
+  <script src="{{ STATIC }}/vendor/gsap.min.js"></script>
+  <script src="{{ STATIC }}/vendor/ScrollTrigger.min.js"></script>
   <script type="module" src="{{ STATIC }}/app-story.js"></script>
+  {# Motion is independent of the story module: if either fails the other still runs. #}
+  <script type="module">
+    import { initMotion } from '{{ STATIC }}/app-motion.js';
+    try { initMotion(); } catch (e) { console.warn('motion unavailable:', e.message); }
+  </script>
 </body>
 </html>

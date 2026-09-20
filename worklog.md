@@ -231,3 +231,43 @@ Everything below is on `bot/join-real-lane-split` for the human to merge — des
   should guess — `STATE.md`'s Deadline section is rewritten to say exactly that.
 - **Six claim refs are still held on merged PRs** (`claim/50/69/71/73/75/77`), the same leftover
   pattern released earlier for `claim/11` and `claim/48`. Not released this session; noted in STATE.
+
+## 2026-09-20 afternoon — `src/ui` design pass (mac worker)
+
+- **A design pass over both front-end surfaces, merged straight to `main`.** No PR, no reviewer, on
+  Dhruv's explicit instruction — the same pattern as the eleven-PR run above, and it carries the
+  same caveat: **"merged" must not be read as "reviewed"** when this work is next audited. CI is
+  still dead repo-wide on the billing problem, so `pytest tests -q` locally (**689 passed, 1
+  xfailed**) is the only verification that exists.
+- **GSAP came in vendored, not installed.** `npm i gsap` was the original instruction; `ADR-0002`
+  and `contracts/src/ui.md` both forbid a node toolchain, and adding one is a design decision
+  rather than a lane one. GSAP 3.15.0 + ScrollTrigger are committed under `static/vendor/` with
+  their source URLs and sha384 hashes in the vendor README, exactly as three.js already was. UMD
+  builds loaded as classic scripts ahead of the module graph — the ESM entry is ~40 files and would
+  need the bundler we deliberately do not have.
+- **The pass found one real defect, and it is the reason the work was worth doing.** Every figure in
+  the control room rendered as an em-dash until the API answered. An em-dash is *also* how a figure
+  with no value renders. So for the whole boot, "still loading" and "the API has nothing here" were
+  pixel-identical — the exact collapse `contracts/src/ui.md` forbids, displaced into the time
+  dimension rather than the value one. Figures now shimmer until their own text lands and resolve
+  independently; an 8s failsafe returns them to the honest em-dash, because a skeleton that never
+  ends is a lie about work still being in progress. JS adds the state and JS clears it, so
+  scripting-off behaviour is untouched.
+- **Three of the four design skills wanted things the lane contract forbids, and the contract won
+  every time.** They asked for a web font (Geist/Clash Display), thinner rules, lower density, and
+  a total ban on the em-dash character. `flexgrid.css` already documents why the first is wrong
+  here — *"a font that fails to load on conference wifi is a blank projector"* — and the
+  three-metre projector rule kills the next two. The em-dash ban is about prose styling; in this
+  codebase the character is a data glyph with a test behind it. Worth recording because the next
+  agent pointed at these skills will hit the same four conflicts.
+- **The first cut leaked.** `app.css` is shared by `landing.html` and `simulator.html`, and both had
+  a bare `<body>`, so the landing's atmosphere layers and pill buttons reached the control room
+  before anyone looked. Fixed with `body.landing` / `body.control` scoping. Every block in this pass
+  is appended and scoped; no existing rule was rewritten.
+- **Panels on both screens are now flush with the page surface.** Every chart is a transparent
+  canvas (`clearRect`, never a background fill), so a panel carrying its own lighter gradient put
+  each plot on a raised field that competed with the ink drawn on it.
+- **`app-chart.js:157` is now slightly wrong and was left alone.** It draws knockout dots in
+  `#090c14`, which assumed the old raised panel; against `--navy-900` they read marginally lighter
+  than their surroundings instead of darker. One character, in a module this pass otherwise never
+  touched.

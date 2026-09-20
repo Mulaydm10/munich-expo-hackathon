@@ -6,7 +6,7 @@ disagree about what is true *now*, **STATE wins** — the worklog only explains 
 Note for bus workers: this is the *project* snapshot. The bus's lane/claim state lives in
 `docs/STATE.md` and is written only under the `claim/state` lock. Two different files, on purpose.
 
-Last updated: 2026-09-20 early morning (mac worker; the design node is ACTIVE again and has been
+Last updated: 2026-09-20 afternoon (mac worker; the design node is ACTIVE again and has been
 shipping steadily since 2026-09-18 — #65, #68, #70, #72, #74, #76, #78, #79)
 
 ## Deadline + time remaining
@@ -36,10 +36,25 @@ state the new date, and nobody has asked him for it. So:
   lane issues are claimable and the pinned Board is #16.
 
 ## In flight
-`main` is `264ad1e`; `pytest tests -q` is **687 passed, 1 xfailed** (verified 2026-09-20, venv
-python — see Working notes).
+`main` carries the `src/ui` design pass; `pytest tests -q` is **689 passed, 1 xfailed** (verified
+2026-09-20 afternoon, venv python — see Working notes). The count moved from 687 because
+`tests/src/ui/test_static_modules.py` parametrises over `static/*.js`, and the pass added two
+modules.
 
-- **Nothing is in flight.** Every PR that was open has been merged or closed. The only open PR is
+- **`src/ui` design pass merged to main directly, not via PR** (2026-09-20, on Dhruv's explicit
+  instruction). Landing and control room: GSAP 3.15.0 + ScrollTrigger **vendored** under
+  `static/vendor/` with sha384 hashes in the vendor README — not npm, because `ADR-0002` and
+  `contracts/src/ui.md` both rule out a node toolchain. All CSS is appended and scoped
+  (`body.landing` / `body.control`); nothing existing was rewritten. Motion is never load-bearing
+  (every animation is a `gsap.from()`, so resting CSS is the finished frame) and no motion module
+  touches the *value* of a figure.
+  - It fixed one real defect: the control room rendered an em-dash for a figure that was still
+    loading AND for a figure with no value, so for the length of the boot those two states were
+    indistinguishable. Figures now resolve independently with an 8s failsafe back to the em-dash.
+  - Unchanged on purpose, against the design skills' advice: no web font, nothing below the
+    three-metre projector floor, no network call beyond the API, and the em-dash placeholders
+    (here a data glyph, not prose styling).
+- **Nothing else is in flight.** Every PR that was open has been merged or closed. The only open PR is
   **#4** (`claim/1`), the standing canary — **never merge it**; the protocol depends on it staying
   open.
 - **CI CANNOT RUN AT ALL, repo-wide.** Every GitHub Actions job since 2026-09-18 fails in 3–4s with
