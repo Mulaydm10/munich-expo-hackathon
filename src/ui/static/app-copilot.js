@@ -1,26 +1,23 @@
-/* Copilot — text-first, template-grounded over the loaded ScenarioResult.
- *
- * It answers ONLY from fields present in the scenario/timeseries payloads and
- * says "I don't have that for this scenario" when a field is null or absent.
- * Actions (dispatch) require an explicit confirmation turn.
- *
- * SERVER HOOK: replace askServer() with a POST to your own endpoint for
- * speech + LLM. The ElevenLabs key stays server-side; never ship it to the
- * browser. Until that exists the mic is labelled "Voice: text mode".
- */
+/* Copilot — Featherless answers with local, template-grounded fallback. */
 import * as api from './app-api.js';
 import { el } from './app-dom.js';
 
 const NOT_FLEXGRID = 'FlexGrid is not V2G, is not connected to real chargers, is not a live electricity-market participant, and is not TSO-certified. Charging sessions are synthesized.';
 
-export async function askServer(_question, _context) { // eslint-disable-line no-unused-vars
-  return null; // no backend in this build
-}
-
 export class Copilot {
   constructor(app) {
     this.app = app;
     this.pending = null;
+    this.voiceStatus = { llm: false, stt: false, tts: false };
+    this.ttsOn = false;
+    this.recorder = null;
+    this.recorded = [];
+    this.voiceStatusPromise = api.getVoiceStatus().then((status) => {
+      this.voiceStatus = status;
+      this.ttsOn = status.tts;
+      this.updateVoiceChrome();
+      return status;
+    });
     this.mount();
   }
 
@@ -28,15 +25,19 @@ export class Copilot {
     const btn = el('div', { id: 'copilot-btn' },
       el('div', { className: 'mic', role: 'button', tabindex: '0', 'aria-label': 'Open copilot (text mode)' },
         el('div', { className: 'ring' })));
+    this.mic = btn.querySelector('.mic');
     const bar = document.querySelector('.cmdbar');
     if (bar) { btn.classList.add('inbar'); bar.appendChild(btn); } else document.body.appendChild(btn);
 
+    this.voiceSubtitle = el('div', { className: 'faint', text: 'Voice: text mode — speech backend not configured' });
     this.panel = el('div', { className: 'copilot' },
       el('div', { className: 'chead' },
         el('div', {},
           el('div', { text: 'Copilot' }),
-          el('div', { className: 'faint', text: 'Voice: text mode — speech backend not configured' })),
-        el('button', { className: 'btn ghost small', id: 'cp-close', text: 'Close' })),
+          this.voiceSubtitle),
+        el('div', { className: 'copilot-actions' },
+          el('button', { className: 'btn ghost small', id: 'cp-tts', text: 'Speak replies' }),
+          el('button', { className: 'btn ghost small', id: 'cp-close', text: 'Close' }))),
       el('div', { className: 'cbody' },
         el('div', { id: 'cp-turns', className: 'rowlist' }),
         el('div', { id: 'cp-suggest', className: 'suggest' }),
@@ -45,10 +46,20 @@ export class Copilot {
           el('button', { className: 'btn small', id: 'cp-send', text: 'Ask' }))));
     document.body.appendChild(this.panel);
 
-    const toggle = () => this.panel.classList.toggle('on');
-    btn.addEventListener('click', toggle);
-    btn.addEventListener('keydown', (e) => { if (e.key === 'Enter') toggle(); });
+    btn.addEventListener('click', () => {
+      if (!this.panel.classList.contains('on')) this.open();
+      else this.toggleRecording();
+    });
+    btn.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return;
+      if (!this.panel.classList.contains('on')) this.open();
+      else this.toggleRecording();
+    });
     this.panel.querySelector('#cp-close').addEventListener('click', () => this.panel.classList.remove('on'));
+    this.panel.querySelector('#cp-tts').addEventListener('click', () => {
+      this.ttsOn = !this.ttsOn;
+      this.panel.querySelector('#cp-tts').classList.toggle('off', !this.ttsOn);
+    });
     this.panel.querySelector('#cp-send').addEventListener('click', () => this.send());
     this.panel.querySelector('#cp-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') this.send(); });
 
@@ -68,14 +79,82 @@ export class Copilot {
 
   open() { this.panel.classList.add('on'); }
 
-  turn(who, text, source) {
+  updateVoiceChrome() {
+    if (!this.mic || !this.voiceSubtitle || !this.panel) return;
+    const { llm, stt } = this.voiceStatus;
+    this.voiceSubtitle.textContent = llm && stt
+      ? 'Voice: ElevenLabs · Answers: Featherless'
+      : llm
+        ? 'Answers: Featherless · Voice: text mode'
+        : 'Voice: text mode — speech backend not configured';
+    this.mic.setAttribute('aria-label', stt ? 'Open copilot (voice input)' : 'Open copilot (text mode)');
+    this.panel.querySelector('#cp-tts').classList.toggle('off', !this.ttsOn);
+  }
+
+  async toggleRecording() {
+    if (this.recorder) {
+      this.recorder.stop();
+      return;
+    }
+    await this.voiceStatusPromise;
+    if (!this.voiceStatus.stt || !navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+      this.turn('a', 'Voice input is not configured; type your question instead.', null, true);
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      this.recorded = [];
+      this.recorder = new MediaRecorder(stream);
+      this.recorder.addEventListener('dataavailable', (event) => {
+        if (event.data.size) this.recorded.push(event.data);
+      });
+      this.recorder.addEventListener('stop', async () => {
+        stream.getTracks().forEach((track) => track.stop());
+        this.mic.classList.remove('rec');
+        const recorder = this.recorder;
+        this.recorder = null;
+        if (!recorder || !this.recorded.length) return;
+        try {
+          const text = await api.voiceTranscribe(new Blob(this.recorded, { type: 'audio/webm' }));
+          if (!text) return;
+          this.panel.querySelector('#cp-input').value = text;
+          await this.send();
+        } catch (error) {
+          this.turn('a', `Speech-to-text unavailable: ${error.message}. Type your question instead.`, null, true);
+        }
+      });
+      this.recorder.start();
+      this.mic.classList.add('rec');
+    } catch (error) {
+      this.turn('a', `Microphone unavailable: ${error.message}. Type your question instead.`, null, true);
+    }
+  }
+
+  turn(who, text, source, faint = false) {
     const d = el('div', { className: `turn ${who}` },
       el('span', { className: 'who', text: who === 'a' ? 'copilot' : 'you' }),
       el('span', { text }),
       source ? el('span', { className: 'faint mono', text: `source: ${source}` }) : null);
+    if (faint) d.classList.add('faint');
     this.turns.appendChild(d);
     this.panel.querySelector('.cbody').scrollIntoViewIfNeeded?.();
     this.turns.parentElement.scrollTop = this.turns.parentElement.scrollHeight;
+  }
+
+  async speak(text) {
+    if (!this.ttsOn || !this.voiceStatus.tts) return;
+    try {
+      const blob = await api.voiceSpeak(text);
+      if (!blob) return;
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      const revoke = () => URL.revokeObjectURL(url);
+      audio.addEventListener('ended', revoke, { once: true });
+      audio.addEventListener('error', revoke, { once: true });
+      await audio.play();
+    } catch (error) {
+      this.turn('a', `Text-to-speech unavailable: ${error.message}.`, null, true);
+    }
   }
 
   async send() {
@@ -86,14 +165,13 @@ export class Copilot {
     this.turn('q', q, null);
     const { text, source } = await this.answer(q);
     this.turn('a', text, source);
+    await this.speak(text);
   }
 
   async answer(qRaw) {
     const q = qRaw.toLowerCase();
     const app = this.app;
     const scn = app.scn, fa = scn.forecast_accuracy, tt = scn.totals, sc = scn.scorecard;
-    const server = await askServer(qRaw, { scenario_id: scn.id });
-    if (server) return server;
 
     if (this.pending) {
       if (/\b(yes|approve|confirm|do it|go ahead)\b/.test(q)) {
@@ -106,6 +184,26 @@ export class Copilot {
         };
       }
       if (/\b(no|cancel|stop)\b/.test(q)) { this.pending = null; return { text: 'Cancelled. Nothing was dispatched.', source: null }; }
+    }
+
+    if (/grid asks|dispatch|reduction request/.test(q)) {
+      const kw = 0;
+      this.pending = { call_t: '18:00', notice_min: 10, duration_min: 30, reduction_kw: kw };
+      return {
+        text: 'Enter the requested reduction in the dispatch form. Confirm and I will dispatch it — reply "approve" to continue.',
+        source: 'ReductionEvent {call_t, notice_min, duration_min, reduction_kw}',
+      };
+    }
+    if (/approve/.test(q)) return { text: 'There is no pending reduction to approve.', source: null };
+
+    await this.voiceStatusPromise;
+    if (this.voiceStatus.llm) {
+      try {
+        const response = await api.voiceAsk(qRaw, scn.id, app.selectedSite?.site_id);
+        if (response) return response;
+      } catch (error) {
+        this.turn('a', `Featherless unavailable: ${error.message}; answering from scenario fields.`, null, true);
+      }
     }
 
     if (/what is flexgrid not|\bnot\b.*(v2g|certified)|limitation/.test(q)) return { text: NOT_FLEXGRID, source: 'product scope' };
@@ -160,16 +258,6 @@ export class Copilot {
         source: 'GET /api/scenario/{id}/map',
       };
     }
-    if (/grid asks|dispatch|reduction request/.test(q)) {
-      const kw = 0;
-      this.pending = { call_t: '18:00', notice_min: 10, duration_min: 30, reduction_kw: kw };
-      return {
-        text: 'Enter the requested reduction in the dispatch form. Confirm and I will dispatch it — reply "approve" to continue.',
-        source: 'ReductionEvent {call_t, notice_min, duration_min, reduction_kw}',
-      };
-    }
-    if (/approve/.test(q)) return { text: 'There is no pending reduction to approve.', source: null };
-
     return { text: "I don't have that for this scenario.", source: null };
   }
 }

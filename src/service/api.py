@@ -42,6 +42,7 @@ from src.data import api as data
 from src.market import api as market
 from src.sched import api as sched
 from src.ui import api as ui
+from src.voice import api as voice_api
 
 from . import _cache as cache
 from . import _pipeline as pipeline
@@ -157,6 +158,7 @@ app = FastAPI(
     version="0.1.0",
 )
 app.mount("/static", StaticFiles(directory=str(ui.STATIC_DIR)), name="static")
+app.include_router(voice_api.router)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -270,6 +272,7 @@ def health() -> JSONResponse:
             "git_sha": _git_sha(),
             "tables": tables,
             "data_root": str(root),
+            "voice": voice_api.status(),
         }
     )
 
