@@ -1,0 +1,11 @@
+{
+  "license": "Nutzung frei mit Quellenangabe, Bundesnetzagentur | SMARD.de",
+  "n_nonexistent_local_times_dropped": 0,
+  "n_rows_dropped_missing_values": 0,
+  "native_resolution_min": 15,
+  "resample_method": "native_15min",
+  "resolution_min": 15,
+  "retrieved_at": "2026-09-18T12:16:42.902539+00:00",
+  "rows": 4416,
+  "source_url": "https://www.smard.de/nip-download-manager/nip/download/market-data"
+}

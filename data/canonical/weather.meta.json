@@ -1,0 +1,24 @@
+{
+  "license": "Creative Commons Namensnennung 4.0 International (CC BY 4.0), Deutscher Wetterdienst",
+  "n_missing_ghi_w_m2": 41061,
+  "n_missing_temp_c": 147,
+  "n_missing_wind_ms": 722,
+  "n_rows_before_temperature_window_dropped": 814728,
+  "n_solar_rows_collapsed_same_hour": 30,
+  "native_resolution_min": 60,
+  "resample_method": "forward_fill_from_60min",
+  "resolution_min": 15,
+  "retrieved_at": "2026-09-18T12:06:04.248132+00:00",
+  "rows": 316168,
+  "source_url": "https://opendata.dwd.de/climate_environment/CDC/observations_germany/climate/hourly/",
+  "stations_with_solar": [
+    "01048",
+    "01975",
+    "04336"
+  ],
+  "stations_without_solar": [
+    "00433",
+    "02667",
+    "03379"
+  ]
+}

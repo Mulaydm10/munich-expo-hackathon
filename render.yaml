@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: flexgrid
+    runtime: python
+    plan: free
+    region: frankfurt
+    buildCommand: pip install -r requirements-dev.txt
+    startCommand: uvicorn src.service.api:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.11
+      - key: FEATHERLESS_API_KEY
+        sync: false
+      - key: ELEVENLABS_API_KEY
+        sync: false
+      - key: FEATHERLESS_MODEL
+        value: Qwen/Qwen2.5-72B-Instruct
+      - key: ELEVENLABS_VOICE_ID
+        value: JBFqnCBsd6RMkjVDRZzb

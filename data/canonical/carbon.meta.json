@@ -1,0 +1,51 @@
+{
+  "emission_factors_g_kwh": {
+    "Biomasse": 230.0,
+    "Braunkohle": 1080.0,
+    "Erdgas": 490.0,
+    "Kernenergie": 12.0,
+    "Photovoltaik": 45.0,
+    "Steinkohle": 820.0,
+    "Wasserkraft": 24.0,
+    "Wind Offshore": 12.0,
+    "Wind Onshore": 11.0
+  },
+  "excluded_generation_categories": [
+    "Pumpspeicher",
+    "Sonstige Erneuerbare",
+    "Sonstige Konventionelle"
+  ],
+  "excluded_generation_mwh_share_mean": 0.06640455671782468,
+  "fuels_unreported_entire_file": [
+    "Kernenergie"
+  ],
+  "fuels_with_resolution_qualifier": [
+    "Biomasse",
+    "Braunkohle",
+    "Erdgas",
+    "Kernenergie",
+    "Photovoltaik",
+    "Pumpspeicher",
+    "Sonstige Erneuerbare",
+    "Sonstige Konventionelle",
+    "Steinkohle",
+    "Wasserkraft",
+    "Wind Offshore",
+    "Wind Onshore"
+  ],
+  "license": "Nutzung frei mit Quellenangabe, Bundesnetzagentur | SMARD.de",
+  "n_excluded_missing_values": 0,
+  "n_generation_columns_with_resolution_qualifier": 12,
+  "n_nonexistent_local_times_dropped": 0,
+  "n_rows_dropped_missing_values": 0,
+  "n_rows_with_excluded_generation_category": 4416,
+  "native_resolution_min": 15,
+  "resample_method": "native_15min",
+  "resolution_min": 15,
+  "resolution_qualifiers_seen": [
+    "Originalaufl\u00f6sungen"
+  ],
+  "retrieved_at": "2026-09-18T12:16:44.675543+00:00",
+  "rows": 4416,
+  "source_url": "https://www.smard.de/nip-download-manager/nip/download/market-data"
+}
